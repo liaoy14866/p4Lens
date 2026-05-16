@@ -3,6 +3,12 @@
   "displayName": "P4Lens",
   "publisher": "yuanLilind1477",
   "description": "Display P4 blame information inline in VS Code, similar to GitLens",
+  "icon": "images/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liaoy14866/p4Lens.git"
+  },
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.60.0"
