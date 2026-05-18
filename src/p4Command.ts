@@ -8,6 +8,15 @@ export interface LineAnnotation {
   lineNumber: number;
   changeNum: string;
   user: string;
+  sourceType: 'depot' | 'local';
+}
+
+export interface P4DiffHunk {
+  baseStart: number;
+  baseCount: number;
+  currentStart: number;
+  currentCount: number;
+  lines: string[];
 }
 
 export interface ChangelistDetails {
@@ -43,6 +52,39 @@ export async function runP4Annotate(
   } catch (err) {
     console.error(`[P4Lens] Error executing p4 annotate: ${err}`);
     return null;
+  }
+}
+
+export async function runP4Diff(
+  filePath: string,
+  config: P4Config
+): Promise<P4DiffHunk[]> {
+  const { env, cwd } = buildP4ExecOptions(config, filePath);
+  const diffEnv: NodeJS.ProcessEnv = { ...env };
+  delete diffEnv.P4DIFF;
+  delete diffEnv.P4DIFFUNICODE;
+
+  console.log(`[P4Lens] Executing: p4 diff -du "${filePath}"`);
+
+  try {
+    const output = execFileSync('p4', ['diff', '-du', filePath], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd,
+      env: diffEnv,
+      maxBuffer: P4_MAX_BUFFER,
+    });
+
+    return parseP4DiffOutput(output);
+  } catch (err) {
+    const output = getCommandOutputFromError(err);
+    if (output.trim()) {
+      console.log('[P4Lens] p4 diff returned non-zero status; parsing captured output');
+      return parseP4DiffOutput(output);
+    }
+
+    console.error(`[P4Lens] Error executing p4 diff: ${err}`);
+    return [];
   }
 }
 
@@ -82,6 +124,22 @@ function buildP4ExecOptions(config: P4Config, filePath: string): { env: NodeJS.P
 
   const cwd = config.configPath ? path.dirname(config.configPath) : path.dirname(filePath);
   return { env, cwd };
+}
+
+function getCommandOutputFromError(err: unknown): string {
+  if (!err || typeof err !== 'object') {
+    return '';
+  }
+
+  const errorWithOutput = err as { stdout?: string | Buffer };
+  if (typeof errorWithOutput.stdout === 'string') {
+    return errorWithOutput.stdout;
+  }
+  if (Buffer.isBuffer(errorWithOutput.stdout)) {
+    return errorWithOutput.stdout.toString('utf-8');
+  }
+
+  return '';
 }
 
 /**
@@ -126,6 +184,7 @@ function parseP4AnnotateOutput(output: string): Map<number, LineAnnotation> {
         lineNumber: sourceLineNumber,
         changeNum,
         user,
+        sourceType: 'depot',
       });
       sourceLineNumber++;
     } else {
@@ -138,6 +197,53 @@ function parseP4AnnotateOutput(output: string): Map<number, LineAnnotation> {
 
   console.log(`[P4Lens] Parsed ${annotations.size} line annotations`);
   return annotations;
+}
+
+function parseP4DiffOutput(output: string): P4DiffHunk[] {
+  const hunks: P4DiffHunk[] = [];
+  const lines = output.split('\n');
+  let currentHunk: P4DiffHunk | null = null;
+
+  for (const line of lines) {
+    const hunkMatch = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    if (hunkMatch) {
+      if (currentHunk) {
+        hunks.push(currentHunk);
+      }
+
+      currentHunk = {
+        baseStart: Number.parseInt(hunkMatch[1], 10),
+        baseCount: parseDiffRangeCount(hunkMatch[2]),
+        currentStart: Number.parseInt(hunkMatch[3], 10),
+        currentCount: parseDiffRangeCount(hunkMatch[4]),
+        lines: [],
+      };
+      continue;
+    }
+
+    if (!currentHunk) {
+      continue;
+    }
+
+    if (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\')) {
+      currentHunk.lines.push(line);
+    }
+  }
+
+  if (currentHunk) {
+    hunks.push(currentHunk);
+  }
+
+  console.log(`[P4Lens] Parsed ${hunks.length} diff hunks`);
+  return hunks;
+}
+
+function parseDiffRangeCount(rawCount: string | undefined): number {
+  if (!rawCount) {
+    return 1;
+  }
+
+  return Number.parseInt(rawCount, 10);
 }
 
 function parseP4ChangeOutput(output: string, fallbackChangeNum: string): ChangelistDetails {

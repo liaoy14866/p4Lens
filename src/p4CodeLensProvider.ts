@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { findP4Config } from './p4Config';
-import { runP4Annotate, runP4Describe, ChangelistDetails, LineAnnotation } from './p4Command';
+import { runP4Annotate, runP4Describe, runP4Diff, ChangelistDetails, LineAnnotation, P4DiffHunk } from './p4Command';
 
 export class P4CodeLensProvider {
   private annotations: Map<string, Map<number, LineAnnotation>> = new Map();
@@ -29,7 +29,7 @@ export class P4CodeLensProvider {
     // Get or fetch annotations
     let annotations = this.annotations.get(filePath);
     if (!annotations) {
-      annotations = await this.fetchAnnotations(filePath);
+      annotations = await this.fetchAnnotations(editor.document);
       if (requestId !== this.renderRequestId) {
         return;
       }
@@ -47,24 +47,27 @@ export class P4CodeLensProvider {
       return;
     }
 
-    const config = this.p4ConfigByFile.get(filePath);
-    if (!config) {
-      editor.setDecorations(this.decorationType, []);
-      return;
-    }
-
-    let details = this.changeDetails.get(annotation.changeNum);
-    if (!details) {
-      console.log(`[P4Lens] Changelist cache miss: ${annotation.changeNum}`);
-      details = await this.getOrFetchDescribe(annotation.changeNum, config, filePath) || undefined;
-      if (requestId !== this.renderRequestId) {
+    let details: ChangelistDetails | undefined;
+    if (annotation.sourceType === 'depot') {
+      const config = this.p4ConfigByFile.get(filePath);
+      if (!config) {
+        editor.setDecorations(this.decorationType, []);
         return;
       }
-      if (details) {
-        this.changeDetails.set(annotation.changeNum, details);
+
+      details = this.changeDetails.get(annotation.changeNum);
+      if (!details) {
+        console.log(`[P4Lens] Changelist cache miss: ${annotation.changeNum}`);
+        details = await this.getOrFetchDescribe(annotation.changeNum, config, filePath) || undefined;
+        if (requestId !== this.renderRequestId) {
+          return;
+        }
+        if (details) {
+          this.changeDetails.set(annotation.changeNum, details);
+        }
+      } else {
+        console.log(`[P4Lens] Changelist cache hit: ${annotation.changeNum}`);
       }
-    } else {
-      console.log(`[P4Lens] Changelist cache hit: ${annotation.changeNum}`);
     }
 
     const rendered = this.renderDisplayText(annotation, details);
@@ -91,9 +94,10 @@ export class P4CodeLensProvider {
    * Fetch annotations for a file
    */
   private async fetchAnnotations(
-    filePath: string
+    document: vscode.TextDocument
   ): Promise<Map<number, LineAnnotation> | undefined> {
     try {
+      const filePath = document.uri.fsPath;
       const config = await findP4Config(filePath);
       if (!config) {
         console.log(`[P4Lens] No P4 config found for ${filePath}`);
@@ -102,8 +106,13 @@ export class P4CodeLensProvider {
 
       this.p4ConfigByFile.set(filePath, config);
 
-      const annotations = await runP4Annotate(filePath, config);
-      return annotations || undefined;
+      const baseAnnotations = await runP4Annotate(filePath, config);
+      if (!baseAnnotations) {
+        return undefined;
+      }
+
+      const diffHunks = await runP4Diff(filePath, config);
+      return this.mergeAnnotationsForCurrentDocument(baseAnnotations, diffHunks, document.lineCount);
     } catch (err) {
       console.error(`[P4Lens] Error fetching annotations: ${err}`);
       return undefined;
@@ -125,6 +134,92 @@ export class P4CodeLensProvider {
     }
   }
 
+  private mergeAnnotationsForCurrentDocument(
+    baseAnnotations: Map<number, LineAnnotation>,
+    diffHunks: P4DiffHunk[],
+    currentLineCount: number
+  ): Map<number, LineAnnotation> {
+    const mergedAnnotations = new Map<number, LineAnnotation>();
+    let baseLineNumber = 1;
+    let currentLineNumber = 1;
+
+    for (const hunk of diffHunks) {
+      const unchangedLineCount = Math.min(
+        Math.max(0, hunk.baseStart - baseLineNumber),
+        Math.max(0, hunk.currentStart - currentLineNumber)
+      );
+
+      for (let index = 0; index < unchangedLineCount; index++) {
+        this.copyDepotAnnotation(mergedAnnotations, baseAnnotations, baseLineNumber, currentLineNumber, currentLineCount);
+        baseLineNumber++;
+        currentLineNumber++;
+      }
+
+      for (const diffLine of hunk.lines) {
+        if (diffLine.startsWith('\\')) {
+          continue;
+        }
+
+        if (diffLine.startsWith('-')) {
+          baseLineNumber++;
+          continue;
+        }
+
+        if (diffLine.startsWith('+')) {
+          if (currentLineNumber <= currentLineCount) {
+            mergedAnnotations.set(currentLineNumber, this.createLocalAnnotation(currentLineNumber));
+          }
+          currentLineNumber++;
+          continue;
+        }
+
+        this.copyDepotAnnotation(mergedAnnotations, baseAnnotations, baseLineNumber, currentLineNumber, currentLineCount);
+        baseLineNumber++;
+        currentLineNumber++;
+      }
+    }
+
+    while (currentLineNumber <= currentLineCount && baseLineNumber <= baseAnnotations.size) {
+      this.copyDepotAnnotation(mergedAnnotations, baseAnnotations, baseLineNumber, currentLineNumber, currentLineCount);
+      baseLineNumber++;
+      currentLineNumber++;
+    }
+
+    return mergedAnnotations;
+  }
+
+  private copyDepotAnnotation(
+    mergedAnnotations: Map<number, LineAnnotation>,
+    baseAnnotations: Map<number, LineAnnotation>,
+    baseLineNumber: number,
+    currentLineNumber: number,
+    currentLineCount: number
+  ): void {
+    if (currentLineNumber > currentLineCount) {
+      return;
+    }
+
+    const annotation = baseAnnotations.get(baseLineNumber);
+    if (!annotation) {
+      return;
+    }
+
+    mergedAnnotations.set(currentLineNumber, {
+      ...annotation,
+      lineNumber: currentLineNumber,
+      sourceType: 'depot',
+    });
+  }
+
+  private createLocalAnnotation(lineNumber: number): LineAnnotation {
+    return {
+      lineNumber,
+      changeNum: 'local',
+      user: 'uncommitted',
+      sourceType: 'local',
+    };
+  }
+
   private async getOrFetchDescribe(
     changeNum: string,
     config: NonNullable<Awaited<ReturnType<typeof findP4Config>>>,
@@ -144,13 +239,17 @@ export class P4CodeLensProvider {
   }
 
   private renderDisplayText(annotation: LineAnnotation, details?: ChangelistDetails): string {
+    if (annotation.sourceType === 'local') {
+      return '// local, uncommitted changes';
+    }
+
     const changeNum = details?.changeNum || annotation.changeNum;
     const submittedBy = details?.submittedBy || annotation.user;
     const dateSubmitted = details?.dateSubmitted || 'N/A';
     const description = details?.description || 'N/A';
     const oneLineDescription = description.replace(/\s+/g, ' ').trim();
 
-      return `// ${submittedBy}, #${changeNum}, ${dateSubmitted}, ${oneLineDescription}`;
+    return `// ${submittedBy}, #${changeNum}, ${dateSubmitted}, ${oneLineDescription}`;
   }
 
   dispose(): void {
