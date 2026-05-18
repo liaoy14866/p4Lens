@@ -6,6 +6,8 @@ let pendingEditorForRefresh: vscode.TextEditor | undefined;
 let refreshLoopRunning = false;
 let lastRefreshCompletedAt = 0;
 const REFRESH_COOLDOWN_MS = 150;
+const DECORATION_RESTORE_DELAY_MS = 5000;
+let showDecorationTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('[P4Lens] Activating extension...');
@@ -42,6 +44,10 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    if (event.contentChanges.length > 0) {
+      hideDecorationWhileTyping();
+    }
+
     provider.clearCache(event.document.uri.fsPath);
     if (vscode.window.activeTextEditor?.document.uri.fsPath === event.document.uri.fsPath) {
       markRefreshRequested(vscode.window.activeTextEditor);
@@ -73,7 +79,31 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   pendingEditorForRefresh = undefined;
+  clearShowDecorationTimer();
   console.log('[P4Lens] Extension deactivated');
+}
+
+function hideDecorationWhileTyping(): void {
+  provider.setShowDecoration(false, vscode.window.activeTextEditor);
+  clearShowDecorationTimer();
+  showDecorationTimer = setTimeout(() => {
+    showDecorationTimer = undefined;
+    provider.setShowDecoration(true);
+
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor?.document.uri.scheme === 'file') {
+      markRefreshRequested(activeEditor);
+    }
+  }, DECORATION_RESTORE_DELAY_MS);
+}
+
+function clearShowDecorationTimer(): void {
+  if (!showDecorationTimer) {
+    return;
+  }
+
+  clearTimeout(showDecorationTimer);
+  showDecorationTimer = undefined;
 }
 
 function markRefreshRequested(editor: vscode.TextEditor): void {

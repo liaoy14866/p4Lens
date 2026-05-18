@@ -8,6 +8,7 @@ export class P4CodeLensProvider {
   private inFlightDescribe: Map<string, Promise<ChangelistDetails | null>> = new Map();
   private p4ConfigByFile: Map<string, Awaited<ReturnType<typeof findP4Config>>> = new Map();
   private renderRequestId = 0;
+  private showDecoration = true;
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
     after: {
       contentText: '',
@@ -25,7 +26,7 @@ export class P4CodeLensProvider {
     const requestId = ++this.renderRequestId;
     const filePath = editor.document.uri.fsPath;
     const selectedLine = editor.selection.active.line + 1;
-    
+
     // Get or fetch annotations
     let annotations = this.annotations.get(filePath);
     if (!annotations) {
@@ -36,14 +37,14 @@ export class P4CodeLensProvider {
       if (annotations) {
         this.annotations.set(filePath, annotations);
       } else {
-        editor.setDecorations(this.decorationType, []);
+        this.clearDecoration(editor);
         return;
       }
     }
 
     const annotation = annotations.get(selectedLine);
     if (!annotation) {
-      editor.setDecorations(this.decorationType, []);
+      this.clearDecoration(editor);
       return;
     }
 
@@ -51,7 +52,7 @@ export class P4CodeLensProvider {
     if (annotation.sourceType === 'depot') {
       const config = this.p4ConfigByFile.get(filePath);
       if (!config) {
-        editor.setDecorations(this.decorationType, []);
+        this.clearDecoration(editor);
         return;
       }
 
@@ -71,6 +72,10 @@ export class P4CodeLensProvider {
     }
 
     const rendered = this.renderDisplayText(annotation, details);
+    if (!this.showDecoration) {
+      this.clearDecoration(editor);
+      return;
+    }
 
     const line = editor.document.lineAt(selectedLine - 1);
     const range = new vscode.Range(
@@ -88,6 +93,32 @@ export class P4CodeLensProvider {
         },
       },
     }]);
+  }
+
+  setShowDecoration(show: boolean, editor?: vscode.TextEditor): void {
+    if (this.showDecoration === show) {
+      return;
+    }
+
+    this.showDecoration = show;
+    if (!show) {
+      if (editor) {
+        this.clearDecoration(editor);
+      }
+
+      for (const visibleEditor of vscode.window.visibleTextEditors) {
+        this.clearDecoration(visibleEditor);
+      }
+    }
+  }
+
+  clearDecoration(editor?: vscode.TextEditor): void {
+    const targetEditor = editor || vscode.window.activeTextEditor;
+    if (!targetEditor) {
+      return;
+    }
+
+    targetEditor.setDecorations(this.decorationType, []);
   }
 
   /**
