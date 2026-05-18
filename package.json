@@ -1,6 +1,6 @@
 {
-  "name": "p4lens",
-  "displayName": "P4Lens",
+  "name": "p4lenslite",
+  "displayName": "P4LensLite",
   "publisher": "liaoy14866",
   "description": "Display P4 blame information inline in VS Code, similar to GitLens",
   "icon": "images/icon.png",
