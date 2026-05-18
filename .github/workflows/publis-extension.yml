@@ -4,6 +4,7 @@ on: [push]
 jobs:
   Deploy:
     runs-on: ubuntu-latest
+    environment: Push Extension Secret Env
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
