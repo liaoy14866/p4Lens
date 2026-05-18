@@ -1,11 +1,8 @@
-on:
-  push:
-    tags:
-      - "*"
-
 name: Deploy Extension
+run-name: ${{ github.actor }} is deploying extensions
+on: [push]
 jobs:
-  deploy:
+  Deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
