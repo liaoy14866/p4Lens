@@ -5,9 +5,12 @@ let provider: P4CodeLensProvider;
 let pendingEditorForRefresh: vscode.TextEditor | undefined;
 let refreshLoopRunning = false;
 let lastRefreshCompletedAt = 0;
+let openStatePollRunning = false;
 const REFRESH_COOLDOWN_MS = 150;
 const DECORATION_RESTORE_DELAY_MS = 5000;
+const OPEN_STATE_POLL_INTERVAL_MS = 2000;
 let showDecorationTimer: NodeJS.Timeout | undefined;
+let openStatePollTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('[P4Lens] Activating extension...');
@@ -72,6 +75,10 @@ export function activate(context: vscode.ExtensionContext) {
     markRefreshRequested(vscode.window.activeTextEditor);
   }
 
+  openStatePollTimer = setInterval(() => {
+    void pollCachedFileOpenStates();
+  }, OPEN_STATE_POLL_INTERVAL_MS);
+
   context.subscriptions.push(provider);
 
   console.log('[P4Lens] Extension activated successfully');
@@ -80,6 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
   pendingEditorForRefresh = undefined;
   clearShowDecorationTimer();
+  clearOpenStatePollTimer();
   console.log('[P4Lens] Extension deactivated');
 }
 
@@ -104,6 +112,15 @@ function clearShowDecorationTimer(): void {
 
   clearTimeout(showDecorationTimer);
   showDecorationTimer = undefined;
+}
+
+function clearOpenStatePollTimer(): void {
+  if (!openStatePollTimer) {
+    return;
+  }
+
+  clearInterval(openStatePollTimer);
+  openStatePollTimer = undefined;
 }
 
 function markRefreshRequested(editor: vscode.TextEditor): void {
@@ -138,6 +155,31 @@ async function runRefreshLoop(): Promise<void> {
     }
   } finally {
     refreshLoopRunning = false;
+  }
+}
+
+async function pollCachedFileOpenStates(): Promise<void> {
+  if (openStatePollRunning) {
+    return;
+  }
+
+  openStatePollRunning = true;
+  try {
+    const changedFilePaths = await provider.clearChangedOpenStateCaches();
+    if (changedFilePaths.length === 0) {
+      return;
+    }
+
+    const activeEditor = vscode.window.activeTextEditor;
+    if (!activeEditor || activeEditor.document.uri.scheme !== 'file') {
+      return;
+    }
+
+    if (changedFilePaths.includes(activeEditor.document.uri.fsPath)) {
+      markRefreshRequested(activeEditor);
+    }
+  } finally {
+    openStatePollRunning = false;
   }
 }
 

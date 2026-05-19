@@ -112,6 +112,39 @@ export async function runP4Describe(
   }
 }
 
+export async function runP4Opened(
+  filePath: string,
+  config: P4Config
+): Promise<boolean | null> {
+  try {
+    const { env, cwd } = buildP4ExecOptions(config, filePath);
+
+    console.log(`[P4Lens] Executing: p4 opened "${filePath}"`);
+    const output = execFileSync('p4', ['opened', filePath], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd,
+      env,
+      maxBuffer: P4_MAX_BUFFER,
+    });
+
+    return output.trim().length > 0;
+  } catch (err) {
+    const stdout = getCommandOutputFromError(err, 'stdout');
+    if (stdout.trim().length > 0) {
+      return true;
+    }
+
+    const stderr = getCommandOutputFromError(err, 'stderr');
+    if (/not opened on this client/i.test(stderr)) {
+      return false;
+    }
+
+    console.error(`[P4Lens] Error executing p4 opened: ${err}`);
+    return null;
+  }
+}
+
 function buildP4ExecOptions(config: P4Config, filePath: string): { env: NodeJS.ProcessEnv; cwd: string } {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -126,17 +159,20 @@ function buildP4ExecOptions(config: P4Config, filePath: string): { env: NodeJS.P
   return { env, cwd };
 }
 
-function getCommandOutputFromError(err: unknown): string {
+function getCommandOutputFromError(err: unknown): string;
+function getCommandOutputFromError(err: unknown, stream: 'stdout' | 'stderr'): string;
+function getCommandOutputFromError(err: unknown, stream: 'stdout' | 'stderr' = 'stdout'): string {
   if (!err || typeof err !== 'object') {
     return '';
   }
 
-  const errorWithOutput = err as { stdout?: string | Buffer };
-  if (typeof errorWithOutput.stdout === 'string') {
-    return errorWithOutput.stdout;
+  const errorWithOutput = err as { stdout?: string | Buffer; stderr?: string | Buffer };
+  const output = errorWithOutput[stream];
+  if (typeof output === 'string') {
+    return output;
   }
-  if (Buffer.isBuffer(errorWithOutput.stdout)) {
-    return errorWithOutput.stdout.toString('utf-8');
+  if (Buffer.isBuffer(output)) {
+    return output.toString('utf-8');
   }
 
   return '';

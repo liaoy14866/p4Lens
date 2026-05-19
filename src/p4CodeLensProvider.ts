@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
 import { findP4Config } from './p4Config';
-import { runP4Annotate, runP4Describe, runP4Diff, ChangelistDetails, LineAnnotation, P4DiffHunk } from './p4Command';
+import { runP4Annotate, runP4Describe, runP4Diff, runP4Opened, ChangelistDetails, LineAnnotation, P4DiffHunk } from './p4Command';
 
 export class P4CodeLensProvider {
   private annotations: Map<string, Map<number, LineAnnotation>> = new Map();
   private changeDetails: Map<string, ChangelistDetails> = new Map();
   private inFlightDescribe: Map<string, Promise<ChangelistDetails | null>> = new Map();
   private p4ConfigByFile: Map<string, Awaited<ReturnType<typeof findP4Config>>> = new Map();
+  private fileOpenStateByPath: Map<string, boolean> = new Map();
   private renderRequestId = 0;
   private showDecoration = true;
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
@@ -157,12 +158,51 @@ export class P4CodeLensProvider {
     if (filePath) {
       this.annotations.delete(filePath);
       this.p4ConfigByFile.delete(filePath);
+      this.fileOpenStateByPath.delete(filePath);
     } else {
       this.annotations.clear();
       this.p4ConfigByFile.clear();
       this.changeDetails.clear();
       this.inFlightDescribe.clear();
+      this.fileOpenStateByPath.clear();
     }
+  }
+
+  getCachedFilePaths(): string[] {
+    return Array.from(this.annotations.keys());
+  }
+
+  async clearChangedOpenStateCaches(): Promise<string[]> {
+    const changedFilePaths: string[] = [];
+    const cachedFilePaths = this.getCachedFilePaths();
+
+    for (const filePath of cachedFilePaths) {
+      const config = this.p4ConfigByFile.get(filePath);
+      if (!config) {
+        continue;
+      }
+
+      const isOpen = await runP4Opened(filePath, config);
+      if (isOpen === null) {
+        continue;
+      }
+
+      const previousIsOpen = this.fileOpenStateByPath.get(filePath);
+      if (previousIsOpen === undefined) {
+        this.fileOpenStateByPath.set(filePath, isOpen);
+        continue;
+      }
+
+      if (previousIsOpen === isOpen) {
+        continue;
+      }
+
+      console.log(`[P4Lens] Open state changed for ${filePath}: ${previousIsOpen} -> ${isOpen}`);
+      changedFilePaths.push(filePath);
+      this.clearCache(filePath);
+    }
+
+    return changedFilePaths;
   }
 
   private mergeAnnotationsForCurrentDocument(
