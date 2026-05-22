@@ -8,7 +8,8 @@ let lastRefreshCompletedAt = 0;
 let openStatePollRunning = false;
 const REFRESH_COOLDOWN_MS = 150;
 const DECORATION_RESTORE_DELAY_MS = 5000;
-const OPEN_STATE_POLL_INTERVAL_MS = 2000;
+const OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY = 'openStatePollIntervalSeconds';
+const DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS = 10;
 let showDecorationTimer: NodeJS.Timeout | undefined;
 let openStatePollTimer: NodeJS.Timeout | undefined;
 
@@ -70,14 +71,27 @@ export function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(documentSaveDisposable);
 
+  const configurationChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration(getOpenStatePollIntervalConfigurationPath())) {
+      restartOpenStatePollTimer();
+    }
+  });
+  context.subscriptions.push(configurationChangeDisposable);
+
+  const manualCheckCommandDisposable = vscode.commands.registerCommand(
+    'p4lenslite.checkOpenStateCache',
+    async () => {
+      await pollCachedFileOpenStates();
+    }
+  );
+  context.subscriptions.push(manualCheckCommandDisposable);
+
   // Update selected-line decoration for current editor on activation
   if (vscode.window.activeTextEditor) {
     markRefreshRequested(vscode.window.activeTextEditor);
   }
 
-  openStatePollTimer = setInterval(() => {
-    void pollCachedFileOpenStates();
-  }, OPEN_STATE_POLL_INTERVAL_MS);
+  restartOpenStatePollTimer();
 
   context.subscriptions.push(provider);
 
@@ -121,6 +135,22 @@ function clearOpenStatePollTimer(): void {
 
   clearInterval(openStatePollTimer);
   openStatePollTimer = undefined;
+}
+
+function restartOpenStatePollTimer(): void {
+  clearOpenStatePollTimer();
+
+  const pollIntervalMs = getOpenStatePollIntervalMs();
+  if (pollIntervalMs === 0) {
+    console.log('[P4Lens] Open state polling disabled');
+    return;
+  }
+
+  openStatePollTimer = setInterval(() => {
+    void pollCachedFileOpenStates();
+  }, pollIntervalMs);
+
+  console.log(`[P4Lens] Open state polling every ${pollIntervalMs}ms`);
 }
 
 function markRefreshRequested(editor: vscode.TextEditor): void {
@@ -181,6 +211,22 @@ async function pollCachedFileOpenStates(): Promise<void> {
   } finally {
     openStatePollRunning = false;
   }
+}
+
+function getOpenStatePollIntervalMs(): number {
+  const configuredSeconds = vscode.workspace
+    .getConfiguration('p4LensLite')
+    .get<number>(OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY, DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS);
+
+  if (!Number.isFinite(configuredSeconds) || configuredSeconds <= 0) {
+    return 0;
+  }
+
+  return configuredSeconds * 1000;
+}
+
+function getOpenStatePollIntervalConfigurationPath(): string {
+  return `p4LensLite.${OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY}`;
 }
 
 function sleep(ms: number): Promise<void> {

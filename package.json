@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/liaoy14866/p4Lens.git"
   },
-  "version": "0.1.4",
+  "version": "0.1.5",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -22,7 +22,24 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": []
+    "commands": [
+      {
+        "command": "p4lenslite.checkOpenStateCache",
+        "title": "Check P4 Cache Staleness",
+        "category": "P4LensLite"
+      }
+    ],
+    "configuration": {
+      "title": "P4LensLite",
+      "properties": {
+        "p4LensLite.openStatePollIntervalSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "markdownDescription": "Interval in seconds for automatic P4 cache staleness checks based on `p4 opened`. Default is `10`. Set to `0` to disable automatic polling. You can still run **P4LensLite: Check P4 Cache Staleness** manually from the Command Palette."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
