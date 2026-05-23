@@ -311,7 +311,7 @@ export class P4CodeLensProvider {
 
   private renderDisplayText(annotation: LineAnnotation, details?: ChangelistDetails): string {
     if (annotation.sourceType === 'local') {
-      return '// local, uncommitted changes';
+      return 'uncommitted changes';
     }
 
     const changeNum = details?.changeNum || annotation.changeNum;
@@ -320,7 +320,7 @@ export class P4CodeLensProvider {
     const description = details?.description || 'N/A';
     const oneLineDescription = description.replace(/\s+/g, ' ').trim();
 
-    return `// ${submittedBy}, #${changeNum}, ${dateSubmitted}, ${oneLineDescription}`;
+    return `${submittedBy}, #${changeNum}, ${dateSubmitted}, ${oneLineDescription}`;
   }
 
   dispose(): void {
