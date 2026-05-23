@@ -313,6 +313,12 @@ export class P4CodeLensProvider implements vscode.HoverProvider {
     const filePath = document.uri.fsPath;
     const lineNumber = position.line + 1; // annotations are 1-based
 
+    // Only show hover if hovering at the very end of the line (where decoration is rendered)
+    const line = document.lineAt(position.line);
+    if (position.character < line.range.end.character - 2) {
+      return undefined;
+    }
+
     const fileAnnotations = this.annotations.get(filePath);
     if (!fileAnnotations) {
       return undefined;
@@ -349,14 +355,28 @@ export class P4CodeLensProvider implements vscode.HoverProvider {
 
     md.appendMarkdown(`**${escapedBy}**, ${details.dateSubmitted}\n\n`);
     md.appendMarkdown(`${descFormatted}\n\n`);
-    md.appendMarkdown(`---\n\nCL# \`${annotation.changeNum}\`\u00a0\u00a0[$(copy)](command:p4lenslite.copyChangelistNumber?${copyArg})`);
+    md.appendMarkdown(`---\n\n#\`${annotation.changeNum}\`\u00a0\u00a0[$(copy)](command:p4lenslite.copyChangelistNumber?${copyArg})`);
 
-    const lineRange = document.lineAt(position.line).range;
-    return new vscode.Hover(md, lineRange);
+    const decorationText = this.renderDisplayText(annotation, details);
+    const decorationWidth = this.calculateDecorationWidth(decorationText);
+    const hoverRange = new vscode.Range(
+      position.line,
+      line.range.end.character,
+      position.line,
+      line.range.end.character + decorationWidth
+    );
+    return new vscode.Hover(md, hoverRange);
   }
 
   private escapeMarkdown(text: string): string {
     return text.replace(/[\\`*_{}[\]()#+!]/g, '\\$&');
+  }
+
+  private calculateDecorationWidth(decorationText: string): number {
+    const leftMarginPx = 48;
+    const averageCharWidthPx = 7;
+    const marginChars = Math.ceil(leftMarginPx / averageCharWidthPx);
+    return Math.max(1, decorationText.length + marginChars);
   }
 
   private renderDisplayText(annotation: LineAnnotation, details?: ChangelistDetails): string {

@@ -90,7 +90,7 @@ export function activate(context: vscode.ExtensionContext) {
     'p4lenslite.copyChangelistNumber',
     async (changeNum: string) => {
       await vscode.env.clipboard.writeText(changeNum);
-      vscode.window.showInformationMessage(`Copied CL# ${changeNum} to clipboard`);
+      vscode.window.showInformationMessage(`Copied CL Number ${changeNum} to clipboard`);
     }
   );
   context.subscriptions.push(copyClCommandDisposable);
