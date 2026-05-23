@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { findP4Config } from './p4Config';
 import { runP4Annotate, runP4Describe, runP4Diff, runP4Opened, ChangelistDetails, LineAnnotation, P4DiffHunk } from './p4Command';
 
-export class P4CodeLensProvider {
+export class P4CodeLensProvider implements vscode.HoverProvider {
   private annotations: Map<string, Map<number, LineAnnotation>> = new Map();
   private changeDetails: Map<string, ChangelistDetails> = new Map();
   private inFlightDescribe: Map<string, Promise<ChangelistDetails | null>> = new Map();
@@ -307,6 +307,56 @@ export class P4CodeLensProvider {
       });
     this.inFlightDescribe.set(changeNum, request);
     return request;
+  }
+
+  async provideHover(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Hover | undefined> {
+    const filePath = document.uri.fsPath;
+    const lineNumber = position.line + 1; // annotations are 1-based
+
+    const fileAnnotations = this.annotations.get(filePath);
+    if (!fileAnnotations) {
+      return undefined;
+    }
+
+    const annotation = fileAnnotations.get(lineNumber);
+    if (!annotation || annotation.sourceType === 'local') {
+      return undefined;
+    }
+
+    let details = this.changeDetails.get(annotation.changeNum);
+    if (!details) {
+      const config = this.p4ConfigByFile.get(filePath);
+      if (!config) {
+        return undefined;
+      }
+      const fetched = await this.getOrFetchDescribe(annotation.changeNum, config, filePath);
+      if (!fetched) {
+        return undefined;
+      }
+      details = fetched;
+      this.changeDetails.set(annotation.changeNum, details);
+    }
+
+    const md = new vscode.MarkdownString();
+    md.isTrusted = true;
+    md.supportThemeIcons = true;
+
+    const escapedBy = this.escapeMarkdown(details.submittedBy);
+    const escapedDesc = this.escapeMarkdown(details.description.trim());
+    const descLines = escapedDesc.split('\n').filter(l => l.trim());
+    const descFormatted = descLines.join('\n\n');
+    const copyArg = encodeURIComponent(JSON.stringify(annotation.changeNum));
+
+    md.appendMarkdown(`**${escapedBy}**, ${details.dateSubmitted}\n\n`);
+    md.appendMarkdown(`${descFormatted}\n\n`);
+    md.appendMarkdown(`---\n\nCL# \`${annotation.changeNum}\`\u00a0\u00a0[$(copy)](command:p4lenslite.copyChangelistNumber?${copyArg})`);
+
+    const lineRange = document.lineAt(position.line).range;
+    return new vscode.Hover(md, lineRange);
+  }
+
+  private escapeMarkdown(text: string): string {
+    return text.replace(/[\\`*_{}[\]()#+!]/g, '\\$&');
   }
 
   private renderDisplayText(annotation: LineAnnotation, details?: ChangelistDetails): string {

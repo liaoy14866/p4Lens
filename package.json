@@ -27,6 +27,11 @@
         "command": "p4lenslite.checkOpenStateCache",
         "title": "Check P4 Cache Staleness",
         "category": "P4LensLite"
+      },
+      {
+        "command": "p4lenslite.copyChangelistNumber",
+        "title": "Copy Changelist Number",
+        "category": "P4LensLite"
       }
     ],
     "configuration": {

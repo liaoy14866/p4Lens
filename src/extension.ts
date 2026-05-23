@@ -86,6 +86,21 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(manualCheckCommandDisposable);
 
+  const copyClCommandDisposable = vscode.commands.registerCommand(
+    'p4lenslite.copyChangelistNumber',
+    async (changeNum: string) => {
+      await vscode.env.clipboard.writeText(changeNum);
+      vscode.window.showInformationMessage(`Copied CL# ${changeNum} to clipboard`);
+    }
+  );
+  context.subscriptions.push(copyClCommandDisposable);
+
+  const hoverProviderDisposable = vscode.languages.registerHoverProvider(
+    { scheme: 'file' },
+    provider
+  );
+  context.subscriptions.push(hoverProviderDisposable);
+
   // Update selected-line decoration for current editor on activation
   if (vscode.window.activeTextEditor) {
     markRefreshRequested(vscode.window.activeTextEditor);
