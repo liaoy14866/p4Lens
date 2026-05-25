@@ -11,6 +11,11 @@ export interface LineAnnotation {
   sourceType: 'depot' | 'local';
 }
 
+interface RawAnnotationLine {
+  lineNumber: number;
+  changeNum: string;
+}
+
 export interface P4DiffHunk {
   baseStart: number;
   baseCount: number;
@@ -26,6 +31,31 @@ export interface ChangelistDetails {
   description: string;
 }
 
+enum Direction {
+  TO,
+  FROM,
+}
+
+interface FileLogIntegration {
+  file: string;
+  startRev?: string;
+  endRev: string;
+  operation: string;
+  direction: Direction;
+}
+
+interface FileLogItem {
+  file: string;
+  description: string;
+  revision: string;
+  chnum: string;
+  operation: string;
+  date?: Date;
+  user: string;
+  client: string;
+  integrations: FileLogIntegration[];
+}
+
 /**
  * Execute p4 annotate command and parse the output
  * @param filePath The path to the file to annotate
@@ -38,9 +68,9 @@ export async function runP4Annotate(
 ): Promise<Map<number, LineAnnotation> | null> {
   try {
     const { env, cwd } = buildP4ExecOptions(config, filePath);
-    
-    console.log(`[P4Lens] Executing: p4 annotate -c -u "${filePath}"`);
-    const output = execFileSync('p4', ['annotate', '-c', '-u', filePath], {
+
+    console.log(`[P4Lens] Executing: p4 annotate -q -c -i "${filePath}"`);
+    const annotateOutput = execFileSync('p4', ['annotate', '-q', '-c', '-i', filePath], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd,
@@ -48,7 +78,24 @@ export async function runP4Annotate(
       maxBuffer: P4_MAX_BUFFER,
     });
 
-    return parseP4AnnotateOutput(output);
+    const rawAnnotations = parseP4AnnotateOutput(annotateOutput);
+    if (rawAnnotations.length === 0) {
+      console.log('[P4Lens] No annotate lines parsed');
+      return new Map<number, LineAnnotation>();
+    }
+
+    console.log(`[P4Lens] Executing: p4 filelog -l -t -i "${filePath}"`);
+    const fileLogOutput = execFileSync('p4', ['filelog', '-l', '-t', '-i', filePath], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd,
+      env,
+      maxBuffer: P4_MAX_BUFFER,
+    });
+
+    const fileLog = parseP4FilelogOutput(fileLogOutput);
+    const expandedLogs = await expandIntegratedFileLogs(filePath, config, new Set<string>(), fileLog);
+    return buildIntegrationAwareAnnotations(rawAnnotations, [fileLog, ...expandedLogs]);
   } catch (err) {
     console.error(`[P4Lens] Error executing p4 annotate: ${err}`);
     return null;
@@ -178,49 +225,102 @@ function getCommandOutputFromError(err: unknown, stream: 'stdout' | 'stderr' = '
   return '';
 }
 
+function splitIntoLines(output: string): string[] {
+  return output.split(/\r?\n/);
+}
+
+function sectionArrayBy<T>(items: T[], matcher: (item: T) => boolean): T[][] {
+  const sections: T[][] = [];
+  let currentSection: T[] | undefined;
+
+  for (const item of items) {
+    if (matcher(item)) {
+      if (currentSection && currentSection.length > 0) {
+        sections.push(currentSection);
+      }
+      currentSection = [item];
+      continue;
+    }
+
+    if (currentSection) {
+      currentSection.push(item);
+    }
+  }
+
+  if (currentSection && currentSection.length > 0) {
+    sections.push(currentSection);
+  }
+
+  return sections;
+}
+
+function isTruthy<T>(value: T | undefined | null): value is T {
+  return value !== undefined && value !== null;
+}
+
+function parseDate(dateString: string): Date | undefined {
+  const matches = /(\d{4})\/(\d{2})\/(\d{2})(?: (\d{2}):(\d{2}):(\d{2}))?/.exec(dateString.trim());
+  if (!matches) {
+    return undefined;
+  }
+
+  const [, year, month, day, hours, minutes, seconds] = matches;
+  const hasTime = hours !== undefined && minutes !== undefined && seconds !== undefined;
+  return new Date(
+    Number.parseInt(year, 10),
+    Number.parseInt(month, 10) - 1,
+    Number.parseInt(day, 10),
+    hasTime ? Number.parseInt(hours, 10) : undefined,
+    hasTime ? Number.parseInt(minutes, 10) : undefined,
+    hasTime ? Number.parseInt(seconds, 10) : undefined,
+  );
+}
+
+function dedupeByKey<T, K>(items: T[], keySelector: (item: T) => K): T[] {
+  const seen = new Set<K>();
+  return items.filter((item) => {
+    const key = keySelector(item);
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function addUniqueFiles(doneFiles: Set<string>, integrations: FileLogIntegration[]): FileLogIntegration[] {
+  return integrations.filter((integration) => {
+    if (doneFiles.has(integration.file)) {
+      return false;
+    }
+
+    doneFiles.add(integration.file);
+    return true;
+  });
+}
+
 /**
  * Parse the output of p4 annotate command
- * Expected format:
- *      1   12345  username    function foo() {
- *      2   12346  username    return value;
  * @param output The raw output from p4 annotate
- * @returns A map of line numbers to annotation info
+ * @returns Per-line changelist info
  */
-function parseP4AnnotateOutput(output: string): Map<number, LineAnnotation> {
-  const annotations = new Map<number, LineAnnotation>();
-  const lines = output.split('\n');
+function parseP4AnnotateOutput(output: string): RawAnnotationLine[] {
+  const annotations: RawAnnotationLine[] = [];
+  const lines = splitIntoLines(output);
   let unmatchedCount = 0;
   let sourceLineNumber = 1;
 
   for (const line of lines) {
-    // Skip empty lines
     if (!line.trim()) {
       continue;
     }
 
-    // Skip metadata header line from p4 annotate output
-    // Example: //depot/path/file.cs#24 - edit change 123456 (utf8+m)
-    if (line.startsWith('//')) {
-      continue;
-    }
-
-    const patternWithDate = line.match(/^\s*(\d+):\s+(\S+)\s+\d{4}\/\d{2}\/\d{2}\s+/);
-    const patternColonNoDate = line.match(/^\s*(\d+):\s+(\S+)\s+/);
-    const patternSpace = line.match(/^\s*(\d+)\s+(\S+)\s+/);
-
-    if (patternWithDate || patternColonNoDate || patternSpace) {
-      const changeNum = patternWithDate
-        ? patternWithDate[1]
-        : (patternColonNoDate ? patternColonNoDate[1] : patternSpace![1]);
-      const user = patternWithDate
-        ? patternWithDate[2]
-        : (patternColonNoDate ? patternColonNoDate[2] : patternSpace![2]);
-
-      annotations.set(sourceLineNumber, {
+    const matches = /^(\d+): (.*?)$/.exec(line);
+    if (matches) {
+      annotations.push({
         lineNumber: sourceLineNumber,
-        changeNum,
-        user,
-        sourceType: 'depot',
+        changeNum: matches[1],
       });
       sourceLineNumber++;
     } else {
@@ -231,8 +331,184 @@ function parseP4AnnotateOutput(output: string): Map<number, LineAnnotation> {
     }
   }
 
-  console.log(`[P4Lens] Parsed ${annotations.size} line annotations`);
+  console.log(`[P4Lens] Parsed ${annotations.length} line annotations`);
   return annotations;
+}
+
+function parseP4FilelogOutput(output: string): FileLogItem[] {
+  const lines = splitIntoLines(output);
+  const fileSections = sectionArrayBy(lines, (line) => line.startsWith('//'));
+  return fileSections.flatMap(parseP4FilelogFile);
+}
+
+function parseP4FilelogFile(lines: string[]): FileLogItem[] {
+  if (lines.length === 0) {
+    return [];
+  }
+
+  const file = lines[0];
+  const historySections = sectionArrayBy(lines.slice(1), (line) => line.startsWith('... #'));
+  return historySections.map((section) => parseP4FilelogItem(section, file)).filter(isTruthy);
+}
+
+function parseP4FilelogItem(lines: string[], file: string): FileLogItem | undefined {
+  const [header, ...rest] = lines;
+  if (!header) {
+    return undefined;
+  }
+
+  const matches = /^\.\.\. #(\d+) change (\d+) (\S+) on (.*?) by (.*?)@(.*?) (.*?)$/.exec(header);
+  if (!matches) {
+    return undefined;
+  }
+
+  const [, revision, chnum, operation, dateString, user, client] = matches;
+  const description = rest
+    .filter((line) => line.startsWith('\t'))
+    .map((line) => line.slice(1))
+    .join('\n');
+  const integrations = rest
+    .filter((line) => line.startsWith('... ...'))
+    .map(parseP4FilelogIntegration)
+    .filter(isTruthy);
+
+  return {
+    file,
+    description,
+    revision,
+    chnum,
+    operation,
+    date: parseDate(dateString),
+    user,
+    client,
+    integrations,
+  };
+}
+
+function parseP4FilelogIntegration(line: string): FileLogIntegration | undefined {
+  const matches = /^\.\.\. \.\.\. (\S+) (into|from) (.*?)#(\d+)(?:,#(\d+))?$/.exec(line);
+  if (!matches) {
+    return undefined;
+  }
+
+  const [, operation, directionString, file, startRevString, endRevString] = matches;
+  const direction = directionString === 'into' ? Direction.TO : Direction.FROM;
+  const startRev = endRevString ? startRevString : undefined;
+  const endRev = endRevString || startRevString;
+  return {
+    file,
+    startRev,
+    endRev,
+    operation,
+    direction,
+  };
+}
+
+async function expandIntegratedFileLogs(
+  filePath: string,
+  config: P4Config,
+  doneFiles: Set<string>,
+  log: FileLogItem[]
+): Promise<FileLogItem[][]> {
+  const secondaryIntegrations = getSecondaryIntegrations(log);
+  const newIntegrations = addUniqueFiles(doneFiles, secondaryIntegrations);
+  if (newIntegrations.length === 0) {
+    return [];
+  }
+
+  const nestedLogs = await Promise.all(newIntegrations.map((integration) => runP4Filelog(integration.file, config)));
+  const expandedNestedLogs = await Promise.all(
+    nestedLogs.map((nestedLog) => expandIntegratedFileLogs(filePath, config, doneFiles, nestedLog))
+  );
+
+  return nestedLogs.concat(...expandedNestedLogs);
+}
+
+async function runP4Filelog(fileSpec: string, config: P4Config): Promise<FileLogItem[]> {
+  const { env, cwd } = buildP4ExecOptions(config, fileSpec);
+
+  console.log(`[P4Lens] Executing: p4 filelog -l -t -i "${fileSpec}"`);
+  const output = execFileSync('p4', ['filelog', '-l', '-t', '-i', fileSpec], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd,
+    env,
+    maxBuffer: P4_MAX_BUFFER,
+  });
+
+  const parsed = parseP4FilelogOutput(output);
+  console.log(`[P4Lens] Parsed ${parsed.length} filelog items from ${fileSpec}`);
+  return parsed;
+}
+
+function getSecondaryIntegrations(log: FileLogItem[]): FileLogIntegration[] {
+  return log.flatMap((logItem) => {
+    const fromIntegrations = logItem.integrations.filter((integration) => integration.direction === Direction.FROM);
+    if (fromIntegrations.length > 1) {
+      return fromIntegrations.filter((integration) => integration.operation === 'copy');
+    }
+
+    return [];
+  });
+}
+
+function buildIntegrationAwareAnnotations(
+  rawAnnotations: RawAnnotationLine[],
+  allLogs: FileLogItem[][]
+): Map<number, LineAnnotation> {
+  const annotations = new Map<number, LineAnnotation>();
+  const logsByChnum = createLogsByChnum(rawAnnotations, allLogs);
+
+  for (const annotation of rawAnnotations) {
+    const logInfo = logsByChnum.get(annotation.changeNum);
+    annotations.set(annotation.lineNumber, {
+      lineNumber: annotation.lineNumber,
+      changeNum: annotation.changeNum,
+      user: logInfo?.user || 'unknown',
+      sourceType: 'depot',
+    });
+  }
+
+  console.log(`[P4Lens] Built ${annotations.size} integration-aware annotations`);
+  return annotations;
+}
+
+function createLogsByChnum(
+  rawAnnotations: RawAnnotationLine[],
+  allLogs: FileLogItem[][]
+): Map<string, FileLogItem> {
+  const requiredChanges = dedupeByKey(rawAnnotations, (annotation) => annotation.changeNum)
+    .map((annotation) => annotation.changeNum)
+    .sort((left, right) => Number.parseInt(right, 10) - Number.parseInt(left, 10));
+
+  const logsByChnum = new Map<string, FileLogItem>();
+  const missingChanges: string[] = [];
+
+  for (const changeNum of requiredChanges) {
+    const fileLog = findLogForChange(changeNum, allLogs);
+    if (fileLog) {
+      logsByChnum.set(changeNum, fileLog);
+    } else {
+      missingChanges.push(changeNum);
+    }
+  }
+
+  if (missingChanges.length > 0) {
+    console.log(`[P4Lens] Could not match filelog entries for changes: ${missingChanges.join(', ')}`);
+  }
+
+  return logsByChnum;
+}
+
+function findLogForChange(changeNum: string, allLogs: FileLogItem[][]): FileLogItem | undefined {
+  for (const fileLogs of allLogs) {
+    const match = fileLogs.find((fileLog) => fileLog.chnum === changeNum);
+    if (match) {
+      return match;
+    }
+  }
+
+  return undefined;
 }
 
 function parseP4DiffOutput(output: string): P4DiffHunk[] {
