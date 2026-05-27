@@ -84,7 +84,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
         {
           title,
           command: 'p4lenslite.showSymbolCollaborators',
-          tooltip: `${this.getSymbolLabel(symbol)} collaborators`,
+          tooltip: this.buildCodeLensTooltip(summary),
           arguments: [this.buildCodeLensMessage(symbol, summary)],
         }
       ));
@@ -656,8 +656,32 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   }
 
   private buildCodeLensMessage(symbol: SymbolDescriptor, summary: SymbolCollaboratorSummary | undefined): string {
-    const title = this.buildCodeLensTitle(summary) ?? '';
-    return `${this.getSymbolLabel(symbol)} ${symbol.name}: ${title}`;
+    const contributorListText = this.buildContributorListText(summary) ?? 'none';
+    return `${this.getSymbolLabel(symbol)} ${symbol.name}: ${contributorListText}`;
+  }
+
+  private buildCodeLensTooltip(summary: SymbolCollaboratorSummary | undefined): string | undefined {
+    return this.buildContributorListText(summary);
+  }
+
+  private buildContributorListText(summary: SymbolCollaboratorSummary | undefined): string | undefined {
+    if (!summary || summary.contributors.length === 0) {
+      return undefined;
+    }
+
+    const localContributor = summary.contributors.find((contributor) => contributor.sourceType === 'local');
+    const depotContributors = summary.contributors.filter((contributor) => contributor.sourceType === 'depot');
+    const contributorNames: string[] = [];
+    if (localContributor) {
+      contributorNames.push('(uncommitted)');
+    }
+    contributorNames.push(...depotContributors.map((contributor) => contributor.user));
+
+    if (contributorNames.length === 0) {
+      return undefined;
+    }
+
+    return contributorNames.join(', ');
   }
 
   private getSymbolLabel(symbol: SymbolDescriptor): string {
