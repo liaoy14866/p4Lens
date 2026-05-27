@@ -32,11 +32,21 @@
         "command": "p4lenslite.copyChangelistNumber",
         "title": "Copy Changelist Number",
         "category": "P4LensLite"
+      },
+      {
+        "command": "p4lenslite.showSymbolCollaborators",
+        "title": "Show Symbol Collaborators",
+        "category": "P4LensLite"
       }
     ],
     "configuration": {
       "title": "P4LensLite",
       "properties": {
+        "p4LensLite.enableSymbolCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Enable class and function collaborator CodeLens when a document symbol provider is available. If disabled, regular annotate decoration and hover remain enabled."
+        },
         "p4LensLite.openStatePollIntervalSeconds": {
           "type": "number",
           "default": 10,

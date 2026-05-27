@@ -9,6 +9,7 @@ let openStatePollRunning = false;
 const REFRESH_COOLDOWN_MS = 150;
 const DECORATION_RESTORE_DELAY_MS = 5000;
 const OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY = 'openStatePollIntervalSeconds';
+const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
 const DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS = 10;
 let showDecorationTimer: NodeJS.Timeout | undefined;
 let openStatePollTimer: NodeJS.Timeout | undefined;
@@ -23,6 +24,7 @@ export function activate(context: vscode.ExtensionContext) {
   const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(
     (editor) => {
       if (editor) {
+        console.log(`[P4Lens] Active editor changed: ${editor.document.uri.fsPath}`);
         markRefreshRequested(editor);
       }
     }
@@ -31,12 +33,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection((event) => {
     if (event.textEditor.document.uri.scheme === 'file') {
+      console.log(`[P4Lens] Selection changed: ${event.textEditor.document.uri.fsPath}`);
       markRefreshRequested(event.textEditor);
     }
   });
   context.subscriptions.push(selectionChangeDisposable);
 
   const documentOpenDisposable = vscode.workspace.onDidOpenTextDocument((document) => {
+    console.log(`[P4Lens] Document opened: ${document.uri.fsPath}`);
     if (vscode.window.activeTextEditor?.document.uri.fsPath === document.uri.fsPath) {
       markRefreshRequested(vscode.window.activeTextEditor);
     }
@@ -47,6 +51,8 @@ export function activate(context: vscode.ExtensionContext) {
     if (event.document.uri.scheme !== 'file') {
       return;
     }
+
+    console.log(`[P4Lens] Document changed: ${event.document.uri.fsPath}, changes=${event.contentChanges.length}`);
 
     if (event.contentChanges.length > 0) {
       hideDecorationWhileTyping();
@@ -64,6 +70,8 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    console.log(`[P4Lens] Document saved: ${document.uri.fsPath}`);
+
     provider.clearCache(document.uri.fsPath);
     if (vscode.window.activeTextEditor?.document.uri.fsPath === document.uri.fsPath) {
       markRefreshRequested(vscode.window.activeTextEditor);
@@ -72,8 +80,14 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(documentSaveDisposable);
 
   const configurationChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
+    console.log('[P4Lens] Configuration changed');
+
     if (event.affectsConfiguration(getOpenStatePollIntervalConfigurationPath())) {
       restartOpenStatePollTimer();
+    }
+
+    if (event.affectsConfiguration(getEnableSymbolCodeLensConfigurationPath())) {
+      provider.refreshCodeLenses();
     }
   });
   context.subscriptions.push(configurationChangeDisposable);
@@ -95,11 +109,26 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(copyClCommandDisposable);
 
+  const showSymbolCollaboratorsDisposable = vscode.commands.registerCommand(
+    'p4lenslite.showSymbolCollaborators',
+    async (message: string) => {
+      await vscode.window.showInformationMessage(message);
+    }
+  );
+  context.subscriptions.push(showSymbolCollaboratorsDisposable);
+
   const hoverProviderDisposable = vscode.languages.registerHoverProvider(
     { scheme: 'file' },
     provider
   );
   context.subscriptions.push(hoverProviderDisposable);
+
+  const codeLensProviderDisposable = vscode.languages.registerCodeLensProvider(
+    { scheme: 'file' },
+    provider
+  );
+  context.subscriptions.push(codeLensProviderDisposable);
+  console.log('[P4Lens] CodeLens provider registered');
 
   // Update selected-line decoration for current editor on activation
   if (vscode.window.activeTextEditor) {
@@ -169,6 +198,7 @@ function restartOpenStatePollTimer(): void {
 }
 
 function markRefreshRequested(editor: vscode.TextEditor): void {
+  console.log(`[P4Lens] Refresh requested: ${editor.document.uri.fsPath}`);
   pendingEditorForRefresh = editor;
   void runRefreshLoop();
 }
@@ -191,6 +221,7 @@ async function runRefreshLoop(): Promise<void> {
       }
 
       try {
+        console.log(`[P4Lens] Refreshing decoration: ${editorToRefresh.document.uri.fsPath}`);
         await provider.updateDecorationsForSelection(editorToRefresh);
       } catch (error) {
         console.error(`[P4Lens] Refresh failed: ${error}`);
@@ -211,6 +242,11 @@ async function pollCachedFileOpenStates(): Promise<void> {
   openStatePollRunning = true;
   try {
     const changedFilePaths = await provider.clearChangedOpenStateCaches();
+    if (provider.hasPendingSymbolProviderRefresh()) {
+      console.log('[P4Lens] Poll detected pending symbol provider refresh');
+      provider.refreshCodeLenses();
+    }
+
     if (changedFilePaths.length === 0) {
       return;
     }
@@ -242,6 +278,10 @@ function getOpenStatePollIntervalMs(): number {
 
 function getOpenStatePollIntervalConfigurationPath(): string {
   return `p4LensLite.${OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY}`;
+}
+
+function getEnableSymbolCodeLensConfigurationPath(): string {
+  return `p4LensLite.${ENABLE_SYMBOL_CODELENS_CONFIG_KEY}`;
 }
 
 function sleep(ms: number): Promise<void> {
