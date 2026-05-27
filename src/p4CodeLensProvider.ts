@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { findP4Config } from './p4Config';
-import { runP4Annotate, runP4Describe, runP4Diff, runP4Opened, ChangelistDetails, LineAnnotation, P4DiffHunk } from './p4Command';
+import { runP4Annotate, runP4Describe, runP4Diff, runP4Opened, ChangelistDetails, LineAnnotation } from './p4Command';
+import { mergeAnnotationsForCurrentDocument } from './p4AnnotationMerge';
 
 export class P4CodeLensProvider implements vscode.HoverProvider {
   private annotations: Map<string, Map<number, LineAnnotation>> = new Map();
@@ -144,7 +145,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider {
       }
 
       const diffHunks = await runP4Diff(filePath, config);
-      return this.mergeAnnotationsForCurrentDocument(baseAnnotations, diffHunks, document.lineCount);
+      return mergeAnnotationsForCurrentDocument(baseAnnotations, diffHunks, document.lineCount);
     } catch (err) {
       console.error(`[P4Lens] Error fetching annotations: ${err}`);
       return undefined;
@@ -203,92 +204,6 @@ export class P4CodeLensProvider implements vscode.HoverProvider {
     }
 
     return changedFilePaths;
-  }
-
-  private mergeAnnotationsForCurrentDocument(
-    baseAnnotations: Map<number, LineAnnotation>,
-    diffHunks: P4DiffHunk[],
-    currentLineCount: number
-  ): Map<number, LineAnnotation> {
-    const mergedAnnotations = new Map<number, LineAnnotation>();
-    let baseLineNumber = 1;
-    let currentLineNumber = 1;
-
-    for (const hunk of diffHunks) {
-      const unchangedLineCount = Math.min(
-        Math.max(0, hunk.baseStart - baseLineNumber),
-        Math.max(0, hunk.currentStart - currentLineNumber)
-      );
-
-      for (let index = 0; index < unchangedLineCount; index++) {
-        this.copyDepotAnnotation(mergedAnnotations, baseAnnotations, baseLineNumber, currentLineNumber, currentLineCount);
-        baseLineNumber++;
-        currentLineNumber++;
-      }
-
-      for (const diffLine of hunk.lines) {
-        if (diffLine.startsWith('\\')) {
-          continue;
-        }
-
-        if (diffLine.startsWith('-')) {
-          baseLineNumber++;
-          continue;
-        }
-
-        if (diffLine.startsWith('+')) {
-          if (currentLineNumber <= currentLineCount) {
-            mergedAnnotations.set(currentLineNumber, this.createLocalAnnotation(currentLineNumber));
-          }
-          currentLineNumber++;
-          continue;
-        }
-
-        this.copyDepotAnnotation(mergedAnnotations, baseAnnotations, baseLineNumber, currentLineNumber, currentLineCount);
-        baseLineNumber++;
-        currentLineNumber++;
-      }
-    }
-
-    while (currentLineNumber <= currentLineCount && baseLineNumber <= baseAnnotations.size) {
-      this.copyDepotAnnotation(mergedAnnotations, baseAnnotations, baseLineNumber, currentLineNumber, currentLineCount);
-      baseLineNumber++;
-      currentLineNumber++;
-    }
-
-    return mergedAnnotations;
-  }
-
-  private copyDepotAnnotation(
-    mergedAnnotations: Map<number, LineAnnotation>,
-    baseAnnotations: Map<number, LineAnnotation>,
-    baseLineNumber: number,
-    currentLineNumber: number,
-    currentLineCount: number
-  ): void {
-    if (currentLineNumber > currentLineCount) {
-      return;
-    }
-
-    const annotation = baseAnnotations.get(baseLineNumber);
-    if (!annotation) {
-      return;
-    }
-
-    mergedAnnotations.set(currentLineNumber, {
-      ...annotation,
-      lineNumber: currentLineNumber,
-      sourceType: 'depot',
-    });
-  }
-
-  private createLocalAnnotation(lineNumber: number): LineAnnotation {
-    return {
-      lineNumber,
-      changeNum: 'local',
-      user: 'uncommitted',
-      sourceType: 'local',
-    };
   }
 
   private async getOrFetchDescribe(
