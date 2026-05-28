@@ -14,7 +14,7 @@ Main features:
 
 主要功能：
 
-- 在当前行行尾显示 decorations。
+- 在当前行行尾显示 Decorations。
 - 用 CodeLens 显示协作者信息。
 - 本地未提交修改会区分出来。
 
