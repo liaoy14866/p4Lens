@@ -3,6 +3,9 @@ import { LineAnnotation } from './p4Command';
 
 const MAX_VISIBLE_CONTRIBUTORS = 2;
 
+export const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
+export const SYMBOL_CODELENS_NOOP_COMMAND = 'p4lenslite.noopSymbolCodeLens';
+
 export type SupportedSymbolKind = 'class' | 'interface' | 'struct' | 'function';
 
 export interface SymbolDescriptor {
@@ -29,6 +32,169 @@ export interface CachedSymbolData {
   symbols: SymbolDescriptor[];
   collaboratorSummaryByRangeKey: Map<string, SymbolCollaboratorSummary>;
   hasSymbolProviderResult: boolean;
+}
+
+interface P4SymbolCodeLensFeatureDependencies {
+  getAnnotations(document: vscode.TextDocument): Promise<Map<number, LineAnnotation> | undefined>;
+  escapeMarkdown(text: string): string;
+}
+
+export class P4SymbolCodeLensFeature {
+  private cachedSymbolDataByFile: Map<string, CachedSymbolData> = new Map();
+  private pendingSymbolProviderRefreshByFile: Map<string, number> = new Map();
+
+  constructor(private readonly dependencies: P4SymbolCodeLensFeatureDependencies) {}
+
+  async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
+    console.log(`[P4Lens] provideCodeLenses requested: ${document.uri.fsPath}, version=${document.version}`);
+
+    if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
+      console.log(`[P4Lens] CodeLens skipped: scheme=${document.uri.scheme}, enabled=${this.isSymbolCodeLensEnabled()}`);
+      return [];
+    }
+
+    const symbolData = await this.getOrBuildSymbolData(document);
+    if (!symbolData) {
+      console.log(`[P4Lens] CodeLens skipped: no symbol data for ${document.uri.fsPath}`);
+      return [];
+    }
+
+    const codeLenses: vscode.CodeLens[] = [];
+    for (const symbol of symbolData.symbols) {
+      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
+      const title = buildCodeLensTitle(summary);
+      if (!title) {
+        continue;
+      }
+
+      const anchorPosition = new vscode.Position(symbol.anchorLine - 1, 0);
+      codeLenses.push(new vscode.CodeLens(
+        new vscode.Range(anchorPosition, anchorPosition),
+        {
+          title,
+          command: SYMBOL_CODELENS_NOOP_COMMAND,
+          tooltip: buildCodeLensTooltip(summary),
+        }
+      ));
+    }
+
+    console.log(`[P4Lens] CodeLens generated ${codeLenses.length} entries for ${document.uri.fsPath}`);
+    return codeLenses;
+  }
+
+  async provideHover(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Hover | undefined> {
+    if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
+      return undefined;
+    }
+
+    if (!isPossibleCodeLensHoverPosition(document, position)) {
+      return undefined;
+    }
+
+    const symbolData = await this.getOrBuildSymbolData(document);
+    if (!symbolData) {
+      return undefined;
+    }
+
+    const hoveredLineNumber = position.line + 1;
+    for (const symbol of symbolData.symbols) {
+      if (symbol.anchorLine !== hoveredLineNumber) {
+        continue;
+      }
+
+      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
+      if (!summary || summary.contributors.length === 0) {
+        continue;
+      }
+
+      const title = buildCodeLensTitle(summary);
+      if (!title) {
+        continue;
+      }
+
+      return new vscode.Hover(
+        buildSymbolCodeLensHoverMarkdown(symbol, summary, (text) => this.dependencies.escapeMarkdown(text)),
+        createSymbolCodeLensHoverRange(document, position.line)
+      );
+    }
+
+    return undefined;
+  }
+
+  clearCache(filePath?: string): void {
+    if (filePath) {
+      this.cachedSymbolDataByFile.delete(filePath);
+      this.pendingSymbolProviderRefreshByFile.delete(filePath);
+      return;
+    }
+
+    this.cachedSymbolDataByFile.clear();
+    this.pendingSymbolProviderRefreshByFile.clear();
+  }
+
+  hasPendingRefresh(): boolean {
+    return this.pendingSymbolProviderRefreshByFile.size > 0;
+  }
+
+  private async getOrBuildSymbolData(document: vscode.TextDocument): Promise<CachedSymbolData | undefined> {
+    const filePath = document.uri.fsPath;
+    const cachedData = this.cachedSymbolDataByFile.get(filePath);
+    if (cachedData && cachedData.documentVersion === document.version) {
+      console.log(`[P4Lens] CodeLens symbol cache hit: ${filePath}, version=${document.version}, symbols=${cachedData.symbols.length}, hasProviderResult=${cachedData.hasSymbolProviderResult}`);
+      return cachedData;
+    }
+
+    const symbolLoadResult = await loadSupportedSymbols(document);
+    if (!symbolLoadResult.hasProviderResult) {
+      console.log(`[P4Lens] CodeLens symbol provider not ready for ${filePath}`);
+      this.pendingSymbolProviderRefreshByFile.set(filePath, document.version);
+      return undefined;
+    }
+
+    this.pendingSymbolProviderRefreshByFile.delete(filePath);
+
+    if (symbolLoadResult.symbols.length === 0) {
+      console.log(`[P4Lens] CodeLens symbol provider returned 0 supported symbols for ${filePath}`);
+      const emptySymbolData: CachedSymbolData = {
+        documentVersion: document.version,
+        symbols: [],
+        collaboratorSummaryByRangeKey: new Map(),
+        hasSymbolProviderResult: true,
+      };
+      this.cachedSymbolDataByFile.set(filePath, emptySymbolData);
+      return emptySymbolData;
+    }
+
+    const annotations = await this.dependencies.getAnnotations(document);
+    if (!annotations) {
+      console.log(`[P4Lens] CodeLens skipped: no annotations for ${filePath}`);
+      return undefined;
+    }
+
+    const collaboratorSummaryByRangeKey = new Map<string, SymbolCollaboratorSummary>();
+    for (const symbol of symbolLoadResult.symbols) {
+      collaboratorSummaryByRangeKey.set(
+        createSymbolRangeKey(symbol),
+        buildSymbolCollaboratorSummary(symbol, annotations, document.lineCount)
+      );
+    }
+
+    const symbolData: CachedSymbolData = {
+      documentVersion: document.version,
+      symbols: symbolLoadResult.symbols,
+      collaboratorSummaryByRangeKey,
+      hasSymbolProviderResult: true,
+    };
+    this.cachedSymbolDataByFile.set(filePath, symbolData);
+    console.log(`[P4Lens] CodeLens symbol cache built: ${filePath}, symbols=${symbolData.symbols.length}`);
+    return symbolData;
+  }
+
+  private isSymbolCodeLensEnabled(): boolean {
+    return vscode.workspace
+      .getConfiguration('p4LensLite')
+      .get<boolean>(ENABLE_SYMBOL_CODELENS_CONFIG_KEY, true);
+  }
 }
 
 export async function loadSupportedSymbols(document: vscode.TextDocument): Promise<{

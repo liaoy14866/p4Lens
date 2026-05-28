@@ -2,21 +2,7 @@ import * as vscode from 'vscode';
 import { findP4Config } from './p4Config';
 import { runP4Annotate, runP4Describe, runP4Diff, runP4Opened, ChangelistDetails, LineAnnotation } from './p4Command';
 import { mergeAnnotationsForCurrentDocument } from './p4AnnotationMerge';
-import {
-  buildCodeLensTitle,
-  buildCodeLensTooltip,
-  buildSymbolCollaboratorSummary,
-  buildSymbolCodeLensHoverMarkdown,
-  CachedSymbolData,
-  createSymbolCodeLensHoverRange,
-  createSymbolRangeKey,
-  isPossibleCodeLensHoverPosition,
-  loadSupportedSymbols,
-  SymbolCollaboratorSummary,
-} from './p4SymbolCodeLens';
-
-const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
-const SYMBOL_CODELENS_NOOP_COMMAND = 'p4lenslite.noopSymbolCodeLens';
+import { P4SymbolCodeLensFeature } from './p4SymbolCodeLens';
 
 export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLensProvider {
   private annotations: Map<string, Map<number, LineAnnotation>> = new Map();
@@ -24,12 +10,11 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   private inFlightDescribe: Map<string, Promise<ChangelistDetails | null>> = new Map();
   private p4ConfigByFile: Map<string, Awaited<ReturnType<typeof findP4Config>>> = new Map();
   private fileOpenStateByPath: Map<string, boolean> = new Map();
-  private cachedSymbolDataByFile: Map<string, CachedSymbolData> = new Map();
-  private pendingSymbolProviderRefreshByFile: Map<string, number> = new Map();
   private renderRequestId = 0;
   private showDecoration = true;
   private readonly codeLensChangeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.codeLensChangeEmitter.event;
+  private readonly symbolCodeLensFeature: P4SymbolCodeLensFeature;
   private readonly decorationType = vscode.window.createTextEditorDecorationType({
     after: {
       contentText: '',
@@ -40,41 +25,15 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     isWholeLine: false,
   });
 
+  constructor() {
+    this.symbolCodeLensFeature = new P4SymbolCodeLensFeature({
+      getAnnotations: (document) => this.getOrFetchAnnotations(document),
+      escapeMarkdown: (text) => this.escapeMarkdown(text),
+    });
+  }
+
   async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
-    console.log(`[P4Lens] provideCodeLenses requested: ${document.uri.fsPath}, version=${document.version}`);
-
-    if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
-      console.log(`[P4Lens] CodeLens skipped: scheme=${document.uri.scheme}, enabled=${this.isSymbolCodeLensEnabled()}`);
-      return [];
-    }
-
-    const symbolData = await this.getOrBuildSymbolData(document);
-    if (!symbolData) {
-      console.log(`[P4Lens] CodeLens skipped: no symbol data for ${document.uri.fsPath}`);
-      return [];
-    }
-
-    const codeLenses: vscode.CodeLens[] = [];
-    for (const symbol of symbolData.symbols) {
-      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
-      const title = buildCodeLensTitle(summary);
-      if (!title) {
-        continue;
-      }
-
-      const anchorPosition = new vscode.Position(symbol.anchorLine - 1, 0);
-      codeLenses.push(new vscode.CodeLens(
-        new vscode.Range(anchorPosition, anchorPosition),
-        {
-          title,
-          command: SYMBOL_CODELENS_NOOP_COMMAND,
-          tooltip: buildCodeLensTooltip(summary),
-        }
-      ));
-    }
-
-    console.log(`[P4Lens] CodeLens generated ${codeLenses.length} entries for ${document.uri.fsPath}`);
-    return codeLenses;
+    return this.symbolCodeLensFeature.provideCodeLenses(document);
   }
 
   /**
@@ -220,16 +179,14 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       this.annotations.delete(filePath);
       this.p4ConfigByFile.delete(filePath);
       this.fileOpenStateByPath.delete(filePath);
-      this.cachedSymbolDataByFile.delete(filePath);
-      this.pendingSymbolProviderRefreshByFile.delete(filePath);
+      this.symbolCodeLensFeature.clearCache(filePath);
     } else {
       this.annotations.clear();
       this.p4ConfigByFile.clear();
       this.changeDetails.clear();
       this.inFlightDescribe.clear();
       this.fileOpenStateByPath.clear();
-      this.cachedSymbolDataByFile.clear();
-      this.pendingSymbolProviderRefreshByFile.clear();
+      this.symbolCodeLensFeature.clearCache();
     }
   }
 
@@ -293,7 +250,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   }
 
   async provideHover(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Hover | undefined> {
-    const symbolHover = await this.provideSymbolCodeLensHover(document, position);
+    const symbolHover = await this.symbolCodeLensFeature.provideHover(document, position);
     if (symbolHover) {
       return symbolHover;
     }
@@ -356,48 +313,6 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     return new vscode.Hover(md, hoverRange);
   }
 
-  private async provideSymbolCodeLensHover(
-    document: vscode.TextDocument,
-    position: vscode.Position
-  ): Promise<vscode.Hover | undefined> {
-    if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
-      return undefined;
-    }
-
-    if (!isPossibleCodeLensHoverPosition(document, position)) {
-      return undefined;
-    }
-
-    const symbolData = await this.getOrBuildSymbolData(document);
-    if (!symbolData) {
-      return undefined;
-    }
-
-    const hoveredLineNumber = position.line + 1;
-    for (const symbol of symbolData.symbols) {
-      if (symbol.anchorLine !== hoveredLineNumber) {
-        continue;
-      }
-
-      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
-      if (!summary || summary.contributors.length === 0) {
-        continue;
-      }
-
-      const title = buildCodeLensTitle(summary);
-      if (!title) {
-        continue;
-      }
-
-      return new vscode.Hover(
-        buildSymbolCodeLensHoverMarkdown(symbol, summary, (text) => this.escapeMarkdown(text)),
-        createSymbolCodeLensHoverRange(document, position.line)
-      );
-    }
-
-    return undefined;
-  }
-
   private escapeMarkdown(text: string): string {
     return text.replace(/[\\`*_{}[\]()#+!]/g, '\\$&');
   }
@@ -408,7 +323,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   }
 
   hasPendingSymbolProviderRefresh(): boolean {
-    return this.pendingSymbolProviderRefreshByFile.size > 0;
+    return this.symbolCodeLensFeature.hasPendingRefresh();
   }
 
   private async getOrFetchAnnotations(
@@ -427,66 +342,6 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
 
     this.annotations.set(filePath, fetchedAnnotations);
     return fetchedAnnotations;
-  }
-
-  private async getOrBuildSymbolData(document: vscode.TextDocument): Promise<CachedSymbolData | undefined> {
-    const filePath = document.uri.fsPath;
-    const cachedData = this.cachedSymbolDataByFile.get(filePath);
-    if (cachedData && cachedData.documentVersion === document.version) {
-      console.log(`[P4Lens] CodeLens symbol cache hit: ${filePath}, version=${document.version}, symbols=${cachedData.symbols.length}, hasProviderResult=${cachedData.hasSymbolProviderResult}`);
-      return cachedData;
-    }
-
-    const symbolLoadResult = await loadSupportedSymbols(document);
-    if (!symbolLoadResult.hasProviderResult) {
-      console.log(`[P4Lens] CodeLens symbol provider not ready for ${filePath}`);
-      this.pendingSymbolProviderRefreshByFile.set(filePath, document.version);
-      return undefined;
-    }
-
-    this.pendingSymbolProviderRefreshByFile.delete(filePath);
-
-    if (symbolLoadResult.symbols.length === 0) {
-      console.log(`[P4Lens] CodeLens symbol provider returned 0 supported symbols for ${filePath}`);
-      const emptySymbolData: CachedSymbolData = {
-        documentVersion: document.version,
-        symbols: [],
-        collaboratorSummaryByRangeKey: new Map(),
-        hasSymbolProviderResult: true,
-      };
-      this.cachedSymbolDataByFile.set(filePath, emptySymbolData);
-      return emptySymbolData;
-    }
-
-    const annotations = await this.getOrFetchAnnotations(document);
-    if (!annotations) {
-      console.log(`[P4Lens] CodeLens skipped: no annotations for ${filePath}`);
-      return undefined;
-    }
-
-    const collaboratorSummaryByRangeKey = new Map<string, SymbolCollaboratorSummary>();
-    for (const symbol of symbolLoadResult.symbols) {
-      collaboratorSummaryByRangeKey.set(
-        createSymbolRangeKey(symbol),
-        buildSymbolCollaboratorSummary(symbol, annotations, document.lineCount)
-      );
-    }
-
-    const symbolData: CachedSymbolData = {
-      documentVersion: document.version,
-      symbols: symbolLoadResult.symbols,
-      collaboratorSummaryByRangeKey,
-      hasSymbolProviderResult: true,
-    };
-    this.cachedSymbolDataByFile.set(filePath, symbolData);
-    console.log(`[P4Lens] CodeLens symbol cache built: ${filePath}, symbols=${symbolData.symbols.length}`);
-    return symbolData;
-  }
-
-  private isSymbolCodeLensEnabled(): boolean {
-    return vscode.workspace
-      .getConfiguration('p4LensLite')
-      .get<boolean>(ENABLE_SYMBOL_CODELENS_CONFIG_KEY, true);
   }
 
   private calculateDecorationWidth(decorationText: string): number {

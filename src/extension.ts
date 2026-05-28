@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { P4CodeLensProvider } from './p4CodeLensProvider';
+import { ENABLE_SYMBOL_CODELENS_CONFIG_KEY, SYMBOL_CODELENS_NOOP_COMMAND } from './p4SymbolCodeLens';
 
 let provider: P4CodeLensProvider;
 let pendingEditorForRefresh: vscode.TextEditor | undefined;
@@ -9,7 +10,6 @@ let openStatePollRunning = false;
 const REFRESH_COOLDOWN_MS = 150;
 const DECORATION_RESTORE_DELAY_MS = 5000;
 const OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY = 'openStatePollIntervalSeconds';
-const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
 const DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS = 10;
 let showDecorationTimer: NodeJS.Timeout | undefined;
 let openStatePollTimer: NodeJS.Timeout | undefined;
@@ -110,7 +110,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(copyClCommandDisposable);
 
   const noopSymbolCodeLensDisposable = vscode.commands.registerCommand(
-    'p4lenslite.noopSymbolCodeLens',
+    SYMBOL_CODELENS_NOOP_COMMAND,
     () => undefined
   );
   context.subscriptions.push(noopSymbolCodeLensDisposable);
