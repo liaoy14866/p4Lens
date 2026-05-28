@@ -2,38 +2,21 @@ import * as vscode from 'vscode';
 import { findP4Config } from './p4Config';
 import { runP4Annotate, runP4Describe, runP4Diff, runP4Opened, ChangelistDetails, LineAnnotation } from './p4Command';
 import { mergeAnnotationsForCurrentDocument } from './p4AnnotationMerge';
+import {
+  buildCodeLensTitle,
+  buildCodeLensTooltip,
+  buildSymbolCollaboratorSummary,
+  buildSymbolCodeLensHoverMarkdown,
+  CachedSymbolData,
+  createSymbolCodeLensHoverRange,
+  createSymbolRangeKey,
+  isPossibleCodeLensHoverPosition,
+  loadSupportedSymbols,
+  SymbolCollaboratorSummary,
+} from './p4SymbolCodeLens';
 
 const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
-const MAX_VISIBLE_CONTRIBUTORS = 2;
 const SYMBOL_CODELENS_NOOP_COMMAND = 'p4lenslite.noopSymbolCodeLens';
-
-type SupportedSymbolKind = 'class' | 'interface' | 'struct' | 'function';
-
-interface SymbolDescriptor {
-  kind: SupportedSymbolKind;
-  name: string;
-  startLine: number;
-  endLine: number;
-  anchorLine: number;
-}
-
-interface SymbolContributor {
-  user: string;
-  sourceType: 'depot' | 'local';
-  lineCount: number;
-}
-
-interface SymbolCollaboratorSummary {
-  contributors: SymbolContributor[];
-  hasLocalChanges: boolean;
-}
-
-interface CachedSymbolData {
-  documentVersion: number;
-  symbols: SymbolDescriptor[];
-  collaboratorSummaryByRangeKey: Map<string, SymbolCollaboratorSummary>;
-  hasSymbolProviderResult: boolean;
-}
 
 export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLensProvider {
   private annotations: Map<string, Map<number, LineAnnotation>> = new Map();
@@ -73,8 +56,8 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
 
     const codeLenses: vscode.CodeLens[] = [];
     for (const symbol of symbolData.symbols) {
-      const summary = symbolData.collaboratorSummaryByRangeKey.get(this.createSymbolRangeKey(symbol));
-      const title = this.buildCodeLensTitle(summary);
+      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
+      const title = buildCodeLensTitle(summary);
       if (!title) {
         continue;
       }
@@ -85,7 +68,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
         {
           title,
           command: SYMBOL_CODELENS_NOOP_COMMAND,
-          tooltip: this.buildCodeLensTooltip(summary),
+          tooltip: buildCodeLensTooltip(summary),
         }
       ));
     }
@@ -381,7 +364,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       return undefined;
     }
 
-    if (!this.isPossibleCodeLensHoverPosition(document, position)) {
+    if (!isPossibleCodeLensHoverPosition(document, position)) {
       return undefined;
     }
 
@@ -396,19 +379,19 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
         continue;
       }
 
-      const summary = symbolData.collaboratorSummaryByRangeKey.get(this.createSymbolRangeKey(symbol));
+      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
       if (!summary || summary.contributors.length === 0) {
         continue;
       }
 
-      const title = this.buildCodeLensTitle(summary);
+      const title = buildCodeLensTitle(summary);
       if (!title) {
         continue;
       }
 
       return new vscode.Hover(
-        this.buildSymbolCodeLensHoverMarkdown(symbol, summary),
-        this.createSymbolCodeLensHoverRange(document, position.line)
+        buildSymbolCodeLensHoverMarkdown(symbol, summary, (text) => this.escapeMarkdown(text)),
+        createSymbolCodeLensHoverRange(document, position.line)
       );
     }
 
@@ -454,7 +437,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       return cachedData;
     }
 
-    const symbolLoadResult = await this.loadSupportedSymbols(document);
+    const symbolLoadResult = await loadSupportedSymbols(document);
     if (!symbolLoadResult.hasProviderResult) {
       console.log(`[P4Lens] CodeLens symbol provider not ready for ${filePath}`);
       this.pendingSymbolProviderRefreshByFile.set(filePath, document.version);
@@ -484,8 +467,8 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     const collaboratorSummaryByRangeKey = new Map<string, SymbolCollaboratorSummary>();
     for (const symbol of symbolLoadResult.symbols) {
       collaboratorSummaryByRangeKey.set(
-        this.createSymbolRangeKey(symbol),
-        this.buildSymbolCollaboratorSummary(symbol, annotations, document.lineCount)
+        createSymbolRangeKey(symbol),
+        buildSymbolCollaboratorSummary(symbol, annotations, document.lineCount)
       );
     }
 
@@ -500,306 +483,10 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     return symbolData;
   }
 
-  private async loadSupportedSymbols(document: vscode.TextDocument): Promise<{
-    hasProviderResult: boolean;
-    symbols: SymbolDescriptor[];
-  }> {
-    try {
-      const symbolResult = await vscode.commands.executeCommand<(vscode.DocumentSymbol[] | vscode.SymbolInformation[])>(
-        'vscode.executeDocumentSymbolProvider',
-        document.uri
-      );
-      if (!symbolResult) {
-        console.log(`[P4Lens] Symbol provider returned undefined for ${document.uri.fsPath}`);
-        return {
-          hasProviderResult: false,
-          symbols: [],
-        };
-      }
-
-      if (symbolResult.length === 0) {
-        console.log(`[P4Lens] Symbol provider returned empty list for ${document.uri.fsPath}`);
-        return {
-          hasProviderResult: true,
-          symbols: [],
-        };
-      }
-
-      if (this.isDocumentSymbol(symbolResult[0])) {
-        const flattenedSymbols = this.flattenDocumentSymbols(symbolResult as vscode.DocumentSymbol[]);
-        console.log(`[P4Lens] Symbol provider returned ${flattenedSymbols.length} supported document symbols for ${document.uri.fsPath}`);
-        return {
-          hasProviderResult: true,
-          symbols: flattenedSymbols,
-        };
-      }
-
-      const filteredSymbols = this.filterSymbolInformation(symbolResult as vscode.SymbolInformation[]);
-      console.log(`[P4Lens] Symbol provider returned ${filteredSymbols.length} supported flat symbols for ${document.uri.fsPath}`);
-      return {
-        hasProviderResult: true,
-        symbols: filteredSymbols,
-      };
-    } catch (error) {
-      console.log(`[P4Lens] Symbol provider unavailable for ${document.uri.fsPath}: ${error}`);
-      return {
-        hasProviderResult: false,
-        symbols: [],
-      };
-    }
-  }
-
-  private flattenDocumentSymbols(symbols: vscode.DocumentSymbol[]): SymbolDescriptor[] {
-    const flattenedSymbols: SymbolDescriptor[] = [];
-
-    for (const symbol of symbols) {
-      const descriptor = this.createSymbolDescriptor(
-        symbol.kind,
-        symbol.name,
-        symbol.range,
-        symbol.selectionRange.start.line + 1
-      );
-      if (descriptor) {
-        flattenedSymbols.push(descriptor);
-      }
-
-      flattenedSymbols.push(...this.flattenDocumentSymbols(symbol.children));
-    }
-
-    return flattenedSymbols;
-  }
-
-  private filterSymbolInformation(symbols: vscode.SymbolInformation[]): SymbolDescriptor[] {
-    const descriptors: SymbolDescriptor[] = [];
-    for (const symbol of symbols) {
-      const descriptor = this.createSymbolDescriptor(
-        symbol.kind,
-        symbol.name,
-        symbol.location.range,
-        symbol.location.range.start.line + 1
-      );
-      if (descriptor) {
-        descriptors.push(descriptor);
-      }
-    }
-
-    return descriptors;
-  }
-
-  private createSymbolDescriptor(
-    kind: vscode.SymbolKind,
-    name: string,
-    range: vscode.Range,
-    anchorLine: number
-  ): SymbolDescriptor | undefined {
-    const symbolKind = this.mapSupportedSymbolKind(kind);
-    if (!symbolKind) {
-      return undefined;
-    }
-
-    return {
-      kind: symbolKind,
-      name,
-      startLine: range.start.line + 1,
-      endLine: range.end.line + 1,
-      anchorLine,
-    };
-  }
-
-  private mapSupportedSymbolKind(kind: vscode.SymbolKind): SupportedSymbolKind | undefined {
-    if (kind === vscode.SymbolKind.Class) {
-      return 'class';
-    }
-
-    if (kind === vscode.SymbolKind.Interface) {
-      return 'interface';
-    }
-
-    if (kind === vscode.SymbolKind.Struct) {
-      return 'struct';
-    }
-
-    if (
-      kind === vscode.SymbolKind.Function ||
-      kind === vscode.SymbolKind.Method ||
-      kind === vscode.SymbolKind.Constructor
-    ) {
-      return 'function';
-    }
-
-    return undefined;
-  }
-
-  private buildSymbolCollaboratorSummary(
-    symbol: SymbolDescriptor,
-    annotations: Map<number, LineAnnotation>,
-    documentLineCount: number
-  ): SymbolCollaboratorSummary {
-    const contributorByUser = new Map<string, SymbolContributor>();
-    const startLine = Math.max(1, symbol.startLine);
-    const endLine = Math.min(documentLineCount, symbol.endLine);
-
-    for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
-      const annotation = annotations.get(lineNumber);
-      if (!annotation) {
-        continue;
-      }
-
-      const contributor = contributorByUser.get(annotation.user);
-      if (contributor) {
-        contributor.lineCount++;
-        continue;
-      }
-
-      contributorByUser.set(annotation.user, {
-        user: annotation.user,
-        sourceType: annotation.sourceType,
-        lineCount: 1,
-      });
-    }
-
-    const contributors = Array.from(contributorByUser.values()).sort((left, right) => {
-      if (right.lineCount !== left.lineCount) {
-        return right.lineCount - left.lineCount;
-      }
-
-      return left.user.localeCompare(right.user);
-    });
-
-    return {
-      contributors,
-      hasLocalChanges: contributors.some((contributor) => contributor.sourceType === 'local'),
-    };
-  }
-
-  private buildCodeLensTitle(summary: SymbolCollaboratorSummary | undefined): string | undefined {
-    if (!summary || summary.contributors.length === 0) {
-      return undefined;
-    }
-
-    const localContributor = summary.contributors.find((contributor) => contributor.sourceType === 'local');
-    const depotContributors = summary.contributors.filter((contributor) => contributor.sourceType === 'depot');
-    if (!localContributor && depotContributors.length === 0) {
-      return undefined;
-    }
-
-    const visibleDepotUsers = depotContributors
-      .slice(0, MAX_VISIBLE_CONTRIBUTORS)
-      .map((contributor) => contributor.user);
-    const hiddenDepotCount = Math.max(0, depotContributors.length - visibleDepotUsers.length);
-
-    const titleParts: string[] = [];
-    if (localContributor) {
-      titleParts.push('(uncommitted)');
-    }
-    titleParts.push(...visibleDepotUsers);
-
-    let title = `${titleParts.join(', ')}`;
-    if (hiddenDepotCount > 0) {
-      title += ` +${hiddenDepotCount}`;
-    }
-
-    return title;
-  }
-
-  private buildSymbolCodeLensHoverMarkdown(
-    symbol: SymbolDescriptor,
-    summary: SymbolCollaboratorSummary
-  ): vscode.MarkdownString {
-    const md = new vscode.MarkdownString();
-    const escapedSymbolName = this.escapeMarkdown(symbol.name);
-    md.appendMarkdown(`**${this.getSymbolLabel(symbol)} ${escapedSymbolName}**\n\n`);
-
-    for (const contributor of summary.contributors) {
-      const contributorLabel = contributor.sourceType === 'local'
-        ? '(uncommitted)'
-        : contributor.user;
-      const escapedContributor = this.escapeMarkdown(contributorLabel);
-      const lineLabel = contributor.lineCount === 1 ? 'line' : 'lines';
-      md.appendMarkdown(`- ${escapedContributor}: ${contributor.lineCount} ${lineLabel}\n`);
-    }
-
-    return md;
-  }
-
-  private buildCodeLensTooltip(summary: SymbolCollaboratorSummary | undefined): string | undefined {
-    if (!summary || summary.contributors.length === 0) {
-      return undefined;
-    }
-
-    const contributorLines = summary.contributors.map((contributor) => {
-      if (contributor.sourceType === 'local') {
-        return '- (uncommitted)';
-      }
-
-      return `- ${contributor.user}`;
-    });
-
-    return ['Contributors:', ...contributorLines].join('\n');
-  }
-
-  private buildContributorListText(summary: SymbolCollaboratorSummary | undefined): string | undefined {
-    if (!summary || summary.contributors.length === 0) {
-      return undefined;
-    }
-
-    const localContributor = summary.contributors.find((contributor) => contributor.sourceType === 'local');
-    const depotContributors = summary.contributors.filter((contributor) => contributor.sourceType === 'depot');
-    const contributorNames: string[] = [];
-    if (localContributor) {
-      contributorNames.push('(uncommitted)');
-    }
-    contributorNames.push(...depotContributors.map((contributor) => contributor.user));
-
-    if (contributorNames.length === 0) {
-      return undefined;
-    }
-
-    return contributorNames.join(', ');
-  }
-
-  private getSymbolLabel(symbol: SymbolDescriptor): string {
-    if (symbol.kind === 'class') {
-      return 'Class';
-    }
-
-    if (symbol.kind === 'interface') {
-      return 'Interface';
-    }
-
-    if (symbol.kind === 'struct') {
-      return 'Struct';
-    }
-
-    return 'Function';
-  }
-
-  private createSymbolRangeKey(symbol: SymbolDescriptor): string {
-    return `${symbol.anchorLine}:${symbol.startLine}:${symbol.endLine}:${symbol.kind}:${symbol.name}`;
-  }
-
-  private isPossibleCodeLensHoverPosition(document: vscode.TextDocument, position: vscode.Position): boolean {
-    const line = document.lineAt(position.line);
-    const hoverEndCharacter = Math.max(1, line.firstNonWhitespaceCharacterIndex + 1);
-    return position.character <= hoverEndCharacter;
-  }
-
-  private createSymbolCodeLensHoverRange(document: vscode.TextDocument, lineIndex: number): vscode.Range {
-    const line = document.lineAt(lineIndex);
-    const hoverEndCharacter = Math.max(1, line.firstNonWhitespaceCharacterIndex + 1);
-    return new vscode.Range(lineIndex, 0, lineIndex, hoverEndCharacter);
-  }
-
   private isSymbolCodeLensEnabled(): boolean {
     return vscode.workspace
       .getConfiguration('p4LensLite')
       .get<boolean>(ENABLE_SYMBOL_CODELENS_CONFIG_KEY, true);
-  }
-
-  private isDocumentSymbol(
-    symbol: vscode.DocumentSymbol | vscode.SymbolInformation
-  ): symbol is vscode.DocumentSymbol {
-    return 'selectionRange' in symbol;
   }
 
   private calculateDecorationWidth(decorationText: string): number {
