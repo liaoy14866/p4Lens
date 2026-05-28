@@ -109,13 +109,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
   context.subscriptions.push(copyClCommandDisposable);
 
-  const showSymbolCollaboratorsDisposable = vscode.commands.registerCommand(
-    'p4lenslite.showSymbolCollaborators',
-    async (message: string) => {
-      await vscode.window.showInformationMessage(message);
-    }
+  const noopSymbolCodeLensDisposable = vscode.commands.registerCommand(
+    'p4lenslite.noopSymbolCodeLens',
+    () => undefined
   );
-  context.subscriptions.push(showSymbolCollaboratorsDisposable);
+  context.subscriptions.push(noopSymbolCodeLensDisposable);
 
   const hoverProviderDisposable = vscode.languages.registerHoverProvider(
     { scheme: 'file' },

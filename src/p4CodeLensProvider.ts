@@ -5,6 +5,7 @@ import { mergeAnnotationsForCurrentDocument } from './p4AnnotationMerge';
 
 const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
 const MAX_VISIBLE_CONTRIBUTORS = 2;
+const SYMBOL_CODELENS_NOOP_COMMAND = 'p4lenslite.noopSymbolCodeLens';
 
 type SupportedSymbolKind = 'class' | 'interface' | 'struct' | 'function';
 
@@ -83,9 +84,8 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
         new vscode.Range(anchorPosition, anchorPosition),
         {
           title,
-          command: 'p4lenslite.showSymbolCollaborators',
+          command: SYMBOL_CODELENS_NOOP_COMMAND,
           tooltip: this.buildCodeLensTooltip(summary),
-          arguments: [this.buildCodeLensMessage(symbol, summary)],
         }
       ));
     }
@@ -310,6 +310,11 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   }
 
   async provideHover(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Hover | undefined> {
+    const symbolHover = await this.provideSymbolCodeLensHover(document, position);
+    if (symbolHover) {
+      return symbolHover;
+    }
+
     const filePath = document.uri.fsPath;
     const lineNumber = position.line + 1; // annotations are 1-based
 
@@ -366,6 +371,48 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       line.range.end.character + decorationWidth
     );
     return new vscode.Hover(md, hoverRange);
+  }
+
+  private async provideSymbolCodeLensHover(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): Promise<vscode.Hover | undefined> {
+    if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
+      return undefined;
+    }
+
+    if (!this.isPossibleCodeLensHoverPosition(document, position)) {
+      return undefined;
+    }
+
+    const symbolData = await this.getOrBuildSymbolData(document);
+    if (!symbolData) {
+      return undefined;
+    }
+
+    const hoveredLineNumber = position.line + 1;
+    for (const symbol of symbolData.symbols) {
+      if (symbol.anchorLine !== hoveredLineNumber) {
+        continue;
+      }
+
+      const summary = symbolData.collaboratorSummaryByRangeKey.get(this.createSymbolRangeKey(symbol));
+      if (!summary || summary.contributors.length === 0) {
+        continue;
+      }
+
+      const title = this.buildCodeLensTitle(summary);
+      if (!title) {
+        continue;
+      }
+
+      return new vscode.Hover(
+        this.buildSymbolCodeLensHoverMarkdown(symbol, summary),
+        this.createSymbolCodeLensHoverRange(document, position.line)
+      );
+    }
+
+    return undefined;
   }
 
   private escapeMarkdown(text: string): string {
@@ -655,13 +702,40 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     return title;
   }
 
-  private buildCodeLensMessage(symbol: SymbolDescriptor, summary: SymbolCollaboratorSummary | undefined): string {
-    const contributorListText = this.buildContributorListText(summary) ?? 'none';
-    return `${this.getSymbolLabel(symbol)} ${symbol.name}: ${contributorListText}`;
+  private buildSymbolCodeLensHoverMarkdown(
+    symbol: SymbolDescriptor,
+    summary: SymbolCollaboratorSummary
+  ): vscode.MarkdownString {
+    const md = new vscode.MarkdownString();
+    const escapedSymbolName = this.escapeMarkdown(symbol.name);
+    md.appendMarkdown(`**${this.getSymbolLabel(symbol)} ${escapedSymbolName}**\n\n`);
+
+    for (const contributor of summary.contributors) {
+      const contributorLabel = contributor.sourceType === 'local'
+        ? '(uncommitted)'
+        : contributor.user;
+      const escapedContributor = this.escapeMarkdown(contributorLabel);
+      const lineLabel = contributor.lineCount === 1 ? 'line' : 'lines';
+      md.appendMarkdown(`- ${escapedContributor}: ${contributor.lineCount} ${lineLabel}\n`);
+    }
+
+    return md;
   }
 
   private buildCodeLensTooltip(summary: SymbolCollaboratorSummary | undefined): string | undefined {
-    return this.buildContributorListText(summary);
+    if (!summary || summary.contributors.length === 0) {
+      return undefined;
+    }
+
+    const contributorLines = summary.contributors.map((contributor) => {
+      if (contributor.sourceType === 'local') {
+        return '- (uncommitted)';
+      }
+
+      return `- ${contributor.user}`;
+    });
+
+    return ['Contributors:', ...contributorLines].join('\n');
   }
 
   private buildContributorListText(summary: SymbolCollaboratorSummary | undefined): string | undefined {
@@ -702,6 +776,18 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
 
   private createSymbolRangeKey(symbol: SymbolDescriptor): string {
     return `${symbol.anchorLine}:${symbol.startLine}:${symbol.endLine}:${symbol.kind}:${symbol.name}`;
+  }
+
+  private isPossibleCodeLensHoverPosition(document: vscode.TextDocument, position: vscode.Position): boolean {
+    const line = document.lineAt(position.line);
+    const hoverEndCharacter = Math.max(1, line.firstNonWhitespaceCharacterIndex + 1);
+    return position.character <= hoverEndCharacter;
+  }
+
+  private createSymbolCodeLensHoverRange(document: vscode.TextDocument, lineIndex: number): vscode.Range {
+    const line = document.lineAt(lineIndex);
+    const hoverEndCharacter = Math.max(1, line.firstNonWhitespaceCharacterIndex + 1);
+    return new vscode.Range(lineIndex, 0, lineIndex, hoverEndCharacter);
   }
 
   private isSymbolCodeLensEnabled(): boolean {

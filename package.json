@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/liaoy14866/p4Lens.git"
   },
-  "version": "0.3.2",
+  "version": "0.3.3",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -31,11 +31,6 @@
       {
         "command": "p4lenslite.copyChangelistNumber",
         "title": "Copy Changelist Number",
-        "category": "P4LensLite"
-      },
-      {
-        "command": "p4lenslite.showSymbolCollaborators",
-        "title": "Show Symbol Collaborators",
         "category": "P4LensLite"
       }
     ],
