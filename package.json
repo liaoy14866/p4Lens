@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/liaoy14866/p4Lens.git"
   },
-  "version": "0.3.4",
+  "version": "0.4.0",
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -47,6 +47,50 @@
           "default": 10,
           "minimum": 0,
           "markdownDescription": "Interval in seconds for automatic P4 cache staleness checks based on `p4 opened`. Default is `10`. Set to `0` to disable automatic polling. You can still run **P4LensLite: Check P4 Cache Staleness** manually from the Command Palette."
+        },
+        "p4LensLite.descriptionTrace.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Enable recursive changelist tracing from description payloads. When enabled, hover can follow source changelists declared in the changelist description."
+        },
+        "p4LensLite.descriptionTrace.marker": {
+          "type": "string",
+          "default": "source:",
+          "markdownDescription": "Marker used to locate the trace payload inside a changelist description. Everything after the last marker occurrence is treated as the payload."
+        },
+        "p4LensLite.descriptionTrace.parser": {
+          "type": "string",
+          "enum": [
+            "json"
+          ],
+          "default": "json",
+          "markdownDescription": "Parser used for the description trace payload. The first version supports `json` only."
+        },
+        "p4LensLite.descriptionTrace.changeKey": {
+          "type": "string",
+          "default": "changelist",
+          "markdownDescription": "Key used to read the traced changelist number from the parsed description payload."
+        },
+        "p4LensLite.descriptionTrace.userKey": {
+          "type": "string",
+          "default": "user",
+          "markdownDescription": "Optional key used to read the traced user from the parsed description payload."
+        },
+        "p4LensLite.descriptionTrace.descriptionKey": {
+          "type": "string",
+          "default": "description",
+          "markdownDescription": "Optional key used to read the traced description from the parsed description payload."
+        },
+        "p4LensLite.descriptionTrace.streamKey": {
+          "type": "string",
+          "default": "stream",
+          "markdownDescription": "Optional key used to read the traced stream from the parsed description payload."
+        },
+        "p4LensLite.descriptionTrace.maxDepth": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "markdownDescription": "Maximum recursion depth when following traced changelists from description payloads."
         }
       }
     }

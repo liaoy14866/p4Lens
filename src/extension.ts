@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { P4CodeLensProvider } from './p4CodeLensProvider';
+import { DESCRIPTION_TRACE_CONFIGURATION_PREFIX } from './p4DescriptionTrace';
 import { ENABLE_SYMBOL_CODELENS_CONFIG_KEY, SYMBOL_CODELENS_NOOP_COMMAND } from './p4SymbolCodeLens';
 
 let provider: P4CodeLensProvider;
@@ -88,6 +89,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     if (event.affectsConfiguration(getEnableSymbolCodeLensConfigurationPath())) {
       provider.refreshCodeLenses();
+    }
+
+    if (event.affectsConfiguration(DESCRIPTION_TRACE_CONFIGURATION_PREFIX)) {
+      provider.clearDescribeCache();
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor?.document.uri.scheme === 'file') {
+        markRefreshRequested(activeEditor);
+      }
     }
   });
   context.subscriptions.push(configurationChangeDisposable);

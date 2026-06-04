@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process';
 import * as path from 'path';
 import { P4Config } from './p4Config';
+import { DescriptionTraceSourceSnapshot } from './p4DescriptionTrace';
 import { loadIntegrationAwareAnnotations } from './p4FilelogAnnotations';
 
 const P4_MAX_BUFFER = 10 * 1024 * 1024;
@@ -30,6 +31,15 @@ export interface ChangelistDetails {
   dateSubmitted: string;
   submittedBy: string;
   description: string;
+  traceByDescInfo: ChangelistTraceByDescInfo | null;
+}
+
+export interface ChangelistTraceByDescInfo {
+  marker: string;
+  parser: 'json';
+  rawPayload: string;
+  sourceSnapshot: DescriptionTraceSourceSnapshot;
+  tracedChange: ChangelistDetails | null;
 }
 
 /**
@@ -281,7 +291,7 @@ function parseDiffRangeCount(rawCount: string | undefined): number {
 }
 
 function parseP4ChangeOutput(output: string, fallbackChangeNum: string): ChangelistDetails {
-  const lines = output.split('\n');
+  const lines = splitIntoLines(output);
   let changeNum = fallbackChangeNum;
   let submittedBy = '';
   let dateSubmitted = '';
@@ -313,22 +323,38 @@ function parseP4ChangeOutput(output: string, fallbackChangeNum: string): Changel
     }
 
     if (inDescription) {
-      if (/^\s*[A-Z][A-Za-z]+\s*:\s*/.test(line)) {
+      if (line.startsWith('\t')) {
+        descriptionLines.push(line.slice(1));
+        continue;
+      }
+
+      if (descriptionLines.length === 0 && line.trim().length === 0) {
+        continue;
+      }
+
+      if (line.trim().length === 0) {
+        descriptionLines.push('');
+        continue;
+      }
+
+      if (/^\S[^:]*:\s*/.test(line)) {
         break;
       }
 
-      const trimmed = line.replace(/^\t/, '').trim();
-      if (trimmed.length > 0) {
-        descriptionLines.push(trimmed);
-      }
+      descriptionLines.push(line);
     }
   }
 
-  const description = descriptionLines.join(' ').trim();
+  while (descriptionLines.length > 0 && descriptionLines[descriptionLines.length - 1].trim().length === 0) {
+    descriptionLines.pop();
+  }
+
+  const description = descriptionLines.join('\n').trim();
   return {
     changeNum,
     dateSubmitted,
     submittedBy,
     description,
+    traceByDescInfo: null,
   };
 }
