@@ -305,7 +305,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     md.isTrusted = true;
     md.supportThemeIcons = true;
 
-    this.appendHoverSection(md, 'Current', details);
+    this.appendHoverSection(md, 'Current Version', details);
     this.appendTraceSections(md, details.traceByDescInfo, 1);
 
     const decorationText = this.renderDisplayText(annotation, details);
@@ -385,10 +385,11 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       md.appendMarkdown('\n\n---\n\n');
     }
 
-    md.appendMarkdown(`**${this.escapeMarkdown(sectionTitle)}**\n\n`);
+    md.appendMarkdown(
+      `**${this.escapeMarkdown(details.submittedBy)}**, ${this.escapeMarkdown(details.dateSubmitted)}, ${this.escapeMarkdown(sectionTitle)}\n\n`
+    );
 
     if (isResolved) {
-      md.appendMarkdown(`**${this.escapeMarkdown(details.submittedBy)}**, ${this.escapeMarkdown(details.dateSubmitted)}\n\n`);
       md.appendMarkdown(`${this.formatDescription(details.description)}\n\n`);
       md.appendMarkdown(this.buildChangelistCopyMarkdown(details.changeNum));
     }
@@ -428,7 +429,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     }
 
     if (traceInfo.tracedChange) {
-      this.appendHoverSection(md, `Trace ${depth}`, traceInfo.tracedChange, traceInfo.sourceSnapshot);
+      this.appendHoverSection(md, `Traced Version ${depth} (From Description)`, traceInfo.tracedChange, traceInfo.sourceSnapshot);
       this.appendTraceSections(md, traceInfo.tracedChange.traceByDescInfo, depth + 1);
       return;
     }
@@ -440,7 +441,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       description: traceInfo.sourceSnapshot.description || 'N/A',
       traceByDescInfo: null,
     };
-    this.appendHoverSection(md, `Trace ${depth}`, unresolvedDetails, traceInfo.sourceSnapshot, false);
+    this.appendHoverSection(md, `Traced Version ${depth} (From Description)`, unresolvedDetails, traceInfo.sourceSnapshot, false);
   }
 
   private buildChangelistCopyMarkdown(changeNum: string): string {
