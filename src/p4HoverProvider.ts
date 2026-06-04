@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import {
-  TEMPLATE_TRACE_VERSION_TITLE,
+  TEXT_TRACE_VERSION_TITLE,
   TEXT_CURRENT_VERSION,
   TEXT_NA,
   TEXT_UNKNOWN,

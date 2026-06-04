@@ -44,6 +44,5 @@ export const TEXT_SYMBOL_CLASS = 'Class';
 export const TEXT_SYMBOL_INTERFACE = 'Interface';
 export const TEXT_SYMBOL_STRUCT = 'Struct';
 export const TEXT_SYMBOL_FUNCTION = 'Function';
-
-export const TEMPLATE_COPY_CLIPBOARD_MESSAGE = 'Copied CL Number {0} to clipboard';
-export const TEMPLATE_TRACE_VERSION_TITLE = 'Traced Version {0} (From Description)';
+export const TEXT_COPY_CLIPBOARD_MESSAGE = 'Copied CL Number {0} to clipboard';
+export const TEXT_TRACE_VERSION_TITLE = 'Traced Version {0} (From Description)';

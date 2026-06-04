@@ -1,7 +1,7 @@
 import {
   P4LENS_EXTENSION_ID,
   P4LENS_LOG_PREFIX,
-  TEMPLATE_TRACE_VERSION_TITLE,
+  TEXT_TRACE_VERSION_TITLE,
   TEXT_NA,
 } from './constDefine';
 
@@ -66,7 +66,7 @@ export function buildChangelistSummaryText(
 }
 
 export function buildTraceVersionTitle(depth: number): string {
-  return formatString(TEMPLATE_TRACE_VERSION_TITLE, depth);
+  return formatString(TEXT_TRACE_VERSION_TITLE, depth);
 }
 
 export function buildExtensionConfigPath(configKey: string): string {

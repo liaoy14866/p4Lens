@@ -5,7 +5,7 @@ import {
   COMMAND_COPY_CHANGELIST_NUMBER,
   CONFIG_KEY_OPEN_STATE_POLL_INTERVAL_SECONDS,
   DESCRIPTION_TRACE_CONFIGURATION_PREFIX,
-  TEMPLATE_COPY_CLIPBOARD_MESSAGE,
+  TEXT_COPY_CLIPBOARD_MESSAGE,
 } from './constDefine';
 import {
   ENABLE_SYMBOL_CODELENS_CONFIG_KEY,
@@ -142,7 +142,7 @@ export function activate(context: vscode.ExtensionContext) {
     COMMAND_COPY_CHANGELIST_NUMBER,
     async (changeNum: string) => {
       await vscode.env.clipboard.writeText(changeNum);
-      vscode.window.showInformationMessage(formatString(TEMPLATE_COPY_CLIPBOARD_MESSAGE, changeNum));
+      vscode.window.showInformationMessage(formatString(TEXT_COPY_CLIPBOARD_MESSAGE, changeNum));
     }
   );
   context.subscriptions.push(copyClCommandDisposable);
