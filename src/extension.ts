@@ -1,9 +1,19 @@
 import * as vscode from 'vscode';
-import { P4CodeLensProvider } from './p4CodeLensProvider';
+import { P4DecorationController } from './p4DecorationController';
 import { DESCRIPTION_TRACE_CONFIGURATION_PREFIX } from './p4DescriptionTrace';
-import { ENABLE_SYMBOL_CODELENS_CONFIG_KEY, SYMBOL_CODELENS_NOOP_COMMAND } from './p4SymbolCodeLens';
+import {
+  ENABLE_SYMBOL_CODELENS_CONFIG_KEY,
+  P4SymbolDisplayService,
+  SYMBOL_CODELENS_NOOP_COMMAND,
+} from './p4SymbolCodeLens';
+import { P4HoverProvider } from './p4HoverProvider';
+import { P4LensDataService } from './p4LensDataService';
+import { P4SymbolCodeLensProvider } from './p4SymbolCodeLensProvider';
 
-let provider: P4CodeLensProvider;
+let dataService: P4LensDataService;
+let decorationController: P4DecorationController;
+let hoverProvider: P4HoverProvider;
+let codeLensProvider: P4SymbolCodeLensProvider;
 let pendingEditorForRefresh: vscode.TextEditor | undefined;
 let refreshLoopRunning = false;
 let lastRefreshCompletedAt = 0;
@@ -18,8 +28,14 @@ let openStatePollTimer: NodeJS.Timeout | undefined;
 export function activate(context: vscode.ExtensionContext) {
   console.log('[P4Lens] Activating extension...');
 
-  // Create provider (decorations only)
-  provider = new P4CodeLensProvider();
+  dataService = new P4LensDataService();
+  const symbolDisplayService = new P4SymbolDisplayService({
+    getAnnotations: (document) => dataService.getAnnotations(document),
+    getDisplayAnnotations: (document, annotations) => dataService.getDisplayAnnotations(document, annotations),
+  });
+  decorationController = new P4DecorationController(dataService);
+  hoverProvider = new P4HoverProvider(dataService, decorationController, symbolDisplayService);
+  codeLensProvider = new P4SymbolCodeLensProvider(symbolDisplayService);
 
   // Listen to active editor changes
   const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(
@@ -59,7 +75,9 @@ export function activate(context: vscode.ExtensionContext) {
       hideDecorationWhileTyping();
     }
 
-    provider.clearCache(event.document.uri.fsPath);
+    dataService.clearCache(event.document.uri.fsPath);
+    codeLensProvider.clearCache(event.document.uri.fsPath);
+    codeLensProvider.refresh();
     if (vscode.window.activeTextEditor?.document.uri.fsPath === event.document.uri.fsPath) {
       markRefreshRequested(vscode.window.activeTextEditor);
     }
@@ -73,7 +91,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     console.log(`[P4Lens] Document saved: ${document.uri.fsPath}`);
 
-    provider.clearCache(document.uri.fsPath);
+    dataService.clearCache(document.uri.fsPath);
+    codeLensProvider.clearCache(document.uri.fsPath);
+    codeLensProvider.refresh();
     if (vscode.window.activeTextEditor?.document.uri.fsPath === document.uri.fsPath) {
       markRefreshRequested(vscode.window.activeTextEditor);
     }
@@ -88,11 +108,14 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     if (event.affectsConfiguration(getEnableSymbolCodeLensConfigurationPath())) {
-      provider.refreshCodeLenses();
+      codeLensProvider.clearCache();
+      codeLensProvider.refresh();
     }
 
     if (event.affectsConfiguration(DESCRIPTION_TRACE_CONFIGURATION_PREFIX)) {
-      provider.clearDescribeCache();
+      dataService.clearDescribeCache();
+      codeLensProvider.clearCache();
+      codeLensProvider.refresh();
       const activeEditor = vscode.window.activeTextEditor;
       if (activeEditor?.document.uri.scheme === 'file') {
         markRefreshRequested(activeEditor);
@@ -126,13 +149,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   const hoverProviderDisposable = vscode.languages.registerHoverProvider(
     { scheme: 'file' },
-    provider
+    hoverProvider
   );
   context.subscriptions.push(hoverProviderDisposable);
 
   const codeLensProviderDisposable = vscode.languages.registerCodeLensProvider(
     { scheme: 'file' },
-    provider
+    codeLensProvider
   );
   context.subscriptions.push(codeLensProviderDisposable);
   console.log('[P4Lens] CodeLens provider registered');
@@ -144,7 +167,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   restartOpenStatePollTimer();
 
-  context.subscriptions.push(provider);
+  context.subscriptions.push(decorationController, codeLensProvider);
 
   console.log('[P4Lens] Extension activated successfully');
 }
@@ -157,11 +180,11 @@ export function deactivate() {
 }
 
 function hideDecorationWhileTyping(): void {
-  provider.setShowDecoration(false, vscode.window.activeTextEditor);
+  decorationController.setShowDecoration(false, vscode.window.activeTextEditor);
   clearShowDecorationTimer();
   showDecorationTimer = setTimeout(() => {
     showDecorationTimer = undefined;
-    provider.setShowDecoration(true);
+    decorationController.setShowDecoration(true);
 
     const activeEditor = vscode.window.activeTextEditor;
     if (activeEditor?.document.uri.scheme === 'file') {
@@ -229,7 +252,7 @@ async function runRefreshLoop(): Promise<void> {
 
       try {
         console.log(`[P4Lens] Refreshing decoration: ${editorToRefresh.document.uri.fsPath}`);
-        await provider.updateDecorationsForSelection(editorToRefresh);
+        await decorationController.updateDecorationsForSelection(editorToRefresh);
       } catch (error) {
         console.error(`[P4Lens] Refresh failed: ${error}`);
       } finally {
@@ -248,15 +271,21 @@ async function pollCachedFileOpenStates(): Promise<void> {
 
   openStatePollRunning = true;
   try {
-    const changedFilePaths = await provider.clearChangedOpenStateCaches();
-    if (provider.hasPendingSymbolProviderRefresh()) {
+    const changedFilePaths = await dataService.clearChangedOpenStateCaches();
+    for (const filePath of changedFilePaths) {
+      codeLensProvider.clearCache(filePath);
+    }
+
+    if (codeLensProvider.hasPendingSymbolProviderRefresh()) {
       console.log('[P4Lens] Poll detected pending symbol provider refresh');
-      provider.refreshCodeLenses();
+      codeLensProvider.refresh();
     }
 
     if (changedFilePaths.length === 0) {
       return;
     }
+
+    codeLensProvider.refresh();
 
     const activeEditor = vscode.window.activeTextEditor;
     if (!activeEditor || activeEditor.document.uri.scheme !== 'file') {

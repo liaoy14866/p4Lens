@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/liaoy14866/p4Lens.git"
   },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "engines": {
     "vscode": "^1.60.0"
   },

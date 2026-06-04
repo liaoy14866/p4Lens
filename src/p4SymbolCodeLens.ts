@@ -40,89 +40,29 @@ interface P4SymbolCodeLensFeatureDependencies {
     document: vscode.TextDocument,
     annotations: Map<number, LineAnnotation>
   ): Promise<Map<number, LineAnnotation>>;
-  escapeMarkdown(text: string): string;
 }
 
-export class P4SymbolCodeLensFeature {
+export class P4SymbolDisplayService {
   private cachedSymbolDataByFile: Map<string, CachedSymbolData> = new Map();
   private pendingSymbolProviderRefreshByFile: Map<string, number> = new Map();
 
   constructor(private readonly dependencies: P4SymbolCodeLensFeatureDependencies) {}
 
-  async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
-    console.log(`[P4Lens] provideCodeLenses requested: ${document.uri.fsPath}, version=${document.version}`);
+  async getSymbolData(document: vscode.TextDocument): Promise<CachedSymbolData | undefined> {
+    console.log(`[P4Lens] Symbol data requested: ${document.uri.fsPath}, version=${document.version}`);
 
     if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
-      console.log(`[P4Lens] CodeLens skipped: scheme=${document.uri.scheme}, enabled=${this.isSymbolCodeLensEnabled()}`);
-      return [];
-    }
-
-    const symbolData = await this.getOrBuildSymbolData(document);
-    if (!symbolData) {
-      console.log(`[P4Lens] CodeLens skipped: no symbol data for ${document.uri.fsPath}`);
-      return [];
-    }
-
-    const codeLenses: vscode.CodeLens[] = [];
-    for (const symbol of symbolData.symbols) {
-      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
-      const title = buildCodeLensTitle(summary);
-      if (!title) {
-        continue;
-      }
-
-      const anchorPosition = new vscode.Position(symbol.anchorLine - 1, 0);
-      codeLenses.push(new vscode.CodeLens(
-        new vscode.Range(anchorPosition, anchorPosition),
-        {
-          title,
-          command: SYMBOL_CODELENS_NOOP_COMMAND,
-          tooltip: buildCodeLensTooltip(summary),
-        }
-      ));
-    }
-
-    console.log(`[P4Lens] CodeLens generated ${codeLenses.length} entries for ${document.uri.fsPath}`);
-    return codeLenses;
-  }
-
-  async provideHover(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Hover | undefined> {
-    if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
-      return undefined;
-    }
-
-    if (!isPossibleCodeLensHoverPosition(document, position)) {
+      console.log(`[P4Lens] Symbol data skipped: scheme=${document.uri.scheme}, enabled=${this.isSymbolCodeLensEnabled()}`);
       return undefined;
     }
 
     const symbolData = await this.getOrBuildSymbolData(document);
     if (!symbolData) {
+      console.log(`[P4Lens] Symbol data unavailable for ${document.uri.fsPath}`);
       return undefined;
     }
 
-    const hoveredLineNumber = position.line + 1;
-    for (const symbol of symbolData.symbols) {
-      if (symbol.anchorLine !== hoveredLineNumber) {
-        continue;
-      }
-
-      const summary = symbolData.collaboratorSummaryByRangeKey.get(createSymbolRangeKey(symbol));
-      if (!summary || summary.contributors.length === 0) {
-        continue;
-      }
-
-      const title = buildCodeLensTitle(summary);
-      if (!title) {
-        continue;
-      }
-
-      return new vscode.Hover(
-        buildSymbolCodeLensHoverMarkdown(symbol, summary, (text) => this.dependencies.escapeMarkdown(text)),
-        createSymbolCodeLensHoverRange(document, position.line)
-      );
-    }
-
-    return undefined;
+    return symbolData;
   }
 
   clearCache(filePath?: string): void {
