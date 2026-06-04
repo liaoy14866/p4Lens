@@ -43,7 +43,6 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
    */
   async updateDecorationsForSelection(editor: vscode.TextEditor): Promise<void> {
     const requestId = ++this.renderRequestId;
-    const filePath = editor.document.uri.fsPath;
     const selectedLine = editor.selection.active.line + 1;
 
     // Get or fetch annotations
@@ -64,13 +63,11 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
 
     let details: ChangelistDetails | undefined;
     if (annotation.sourceType === 'depot') {
-      const config = this.p4ConfigByFile.get(filePath);
-      if (!config) {
+      details = await this.getDetailsForChange(annotation.changeNum, editor.document.uri.fsPath) || undefined;
+      if (!details) {
         this.clearDecoration(editor);
         return;
       }
-
-      details = await this.getOrFetchDescribe(annotation.changeNum, config, filePath) || undefined;
       if (requestId !== this.renderRequestId) {
         return;
       }
@@ -168,8 +165,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   }
 
   clearDescribeCache(): void {
-    this.changeDetails.clear();
-    this.inFlightDescribe.clear();
+    this.clearDescribeCaches();
     this.symbolCodeLensFeature.clearCache();
   }
 
@@ -182,11 +178,15 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     } else {
       this.annotations.clear();
       this.p4ConfigByFile.clear();
-      this.changeDetails.clear();
-      this.inFlightDescribe.clear();
+      this.clearDescribeCaches();
       this.fileOpenStateByPath.clear();
       this.symbolCodeLensFeature.clearCache();
     }
+  }
+
+  private clearDescribeCaches(): void {
+    this.changeDetails.clear();
+    this.inFlightDescribe.clear();
   }
 
   getCachedFilePaths(): string[] {
@@ -296,17 +296,9 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       return undefined;
     }
 
-    let details = this.changeDetails.get(annotation.changeNum);
+    const details = await this.getDetailsForChange(annotation.changeNum, filePath);
     if (!details) {
-      const config = this.p4ConfigByFile.get(filePath);
-      if (!config) {
-        return undefined;
-      }
-      const fetched = await this.getOrFetchDescribe(annotation.changeNum, config, filePath);
-      if (!fetched) {
-        return undefined;
-      }
-      details = fetched;
+      return undefined;
     }
 
     const md = new vscode.MarkdownString();
@@ -329,6 +321,15 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
 
   private escapeMarkdown(text: string): string {
     return text.replace(/[\\`*_{}[\]()#+!]/g, '\\$&');
+  }
+
+  private async getDetailsForChange(changeNum: string, filePath: string): Promise<ChangelistDetails | null> {
+    const config = this.p4ConfigByFile.get(filePath);
+    if (!config) {
+      return null;
+    }
+
+    return this.getOrFetchDescribe(changeNum, config, filePath);
   }
 
   private async buildDescribeWithTrace(
@@ -466,21 +467,23 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     annotations: Map<number, LineAnnotation>
   ): Promise<Map<number, LineAnnotation>> {
     const filePath = document.uri.fsPath;
-    const config = this.p4ConfigByFile.get(filePath);
-    if (!config) {
-      return annotations;
+    const depotAnnotations = Array.from(annotations.values()).filter((annotation) => annotation.sourceType === 'depot');
+    const fallbackUserByChangeNum = new Map<string, string>();
+    for (const annotation of depotAnnotations) {
+      if (!fallbackUserByChangeNum.has(annotation.changeNum)) {
+        fallbackUserByChangeNum.set(annotation.changeNum, annotation.user);
+      }
     }
 
-    const depotAnnotations = Array.from(annotations.values()).filter((annotation) => annotation.sourceType === 'depot');
-    const uniqueChangeNums = Array.from(new Set(depotAnnotations.map((annotation) => annotation.changeNum)));
+    const uniqueChangeNums = Array.from(fallbackUserByChangeNum.keys());
     if (uniqueChangeNums.length === 0) {
       return annotations;
     }
 
     const earliestUserByChangeNum = new Map<string, string>();
     await Promise.all(uniqueChangeNums.map(async (changeNum) => {
-      const details = await this.getOrFetchDescribe(changeNum, config, filePath);
-      const fallbackUser = depotAnnotations.find((annotation) => annotation.changeNum === changeNum)?.user || 'unknown';
+      const details = await this.getDetailsForChange(changeNum, filePath);
+      const fallbackUser = fallbackUserByChangeNum.get(changeNum) || 'unknown';
       earliestUserByChangeNum.set(changeNum, this.getEarliestTraceInfo(details)?.submittedBy || fallbackUser);
     }));
 
