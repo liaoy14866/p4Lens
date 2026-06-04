@@ -1,5 +1,7 @@
 import { execFileSync } from 'child_process';
+import { TEXT_UNKNOWN } from './constDefine';
 import type { LineAnnotation } from './p4Command';
+import { buildLogMessage, splitLines } from './stringUtils';
 
 const P4_MAX_BUFFER = 10 * 1024 * 1024;
 
@@ -40,7 +42,7 @@ export async function loadIntegrationAwareAnnotations(
   rawAnnotations: RawAnnotationLine[],
   buildExecOptions: BuildExecOptions
 ): Promise<Map<number, LineAnnotation>> {
-  console.log(`[P4Lens] Executing: p4 filelog -l -t -i "${filePath}"`);
+  console.log(buildLogMessage('Executing: p4 filelog -l -t -i "{0}"', filePath));
   const { env, cwd } = buildExecOptions(filePath);
   const fileLogOutput = execFileSync('p4', ['filelog', '-l', '-t', '-i', filePath], {
     encoding: 'utf-8',
@@ -53,10 +55,6 @@ export async function loadIntegrationAwareAnnotations(
   const fileLog = parseP4FilelogOutput(fileLogOutput);
   const expandedLogs = await expandIntegratedFileLogs(new Set<string>(), fileLog, buildExecOptions);
   return buildIntegrationAwareAnnotations(rawAnnotations, [fileLog, ...expandedLogs]);
-}
-
-function splitIntoLines(output: string): string[] {
-  return output.split(/\r?\n/);
 }
 
 function sectionArrayBy<T>(items: T[], matcher: (item: T) => boolean): T[][] {
@@ -131,7 +129,7 @@ function addUniqueFiles(doneFiles: Set<string>, integrations: FileLogIntegration
 }
 
 function parseP4FilelogOutput(output: string): FileLogItem[] {
-  const lines = splitIntoLines(output);
+  const lines = splitLines(output);
   const fileSections = sectionArrayBy(lines, (line) => line.startsWith('//'));
   return fileSections.flatMap(parseP4FilelogFile);
 }
@@ -221,7 +219,7 @@ async function expandIntegratedFileLogs(
 async function runP4Filelog(fileSpec: string, buildExecOptions: BuildExecOptions): Promise<FileLogItem[]> {
   const { env, cwd } = buildExecOptions(fileSpec);
 
-  console.log(`[P4Lens] Executing: p4 filelog -l -t -i "${fileSpec}"`);
+  console.log(buildLogMessage('Executing: p4 filelog -l -t -i "{0}"', fileSpec));
   const output = execFileSync('p4', ['filelog', '-l', '-t', '-i', fileSpec], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -231,7 +229,7 @@ async function runP4Filelog(fileSpec: string, buildExecOptions: BuildExecOptions
   });
 
   const parsed = parseP4FilelogOutput(output);
-  console.log(`[P4Lens] Parsed ${parsed.length} filelog items from ${fileSpec}`);
+  console.log(buildLogMessage('Parsed {0} filelog items from {1}', parsed.length, fileSpec));
   return parsed;
 }
 
@@ -258,12 +256,12 @@ function buildIntegrationAwareAnnotations(
     annotations.set(annotation.lineNumber, {
       lineNumber: annotation.lineNumber,
       changeNum: annotation.changeNum,
-      user: logInfo?.user || 'unknown',
+      user: logInfo?.user || TEXT_UNKNOWN,
       sourceType: 'depot',
     });
   }
 
-  console.log(`[P4Lens] Built ${annotations.size} integration-aware annotations`);
+  console.log(buildLogMessage('Built {0} integration-aware annotations', annotations.size));
   return annotations;
 }
 
@@ -288,7 +286,7 @@ function createLogsByChnum(
   }
 
   if (missingChanges.length > 0) {
-    console.log(`[P4Lens] Could not match filelog entries for changes: ${missingChanges.join(', ')}`);
+    console.log(buildLogMessage('Could not match filelog entries for changes: {0}', missingChanges.join(', ')));
   }
 
   return logsByChnum;

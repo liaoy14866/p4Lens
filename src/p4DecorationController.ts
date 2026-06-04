@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
+import { TEXT_NA, TEXT_UNCOMMITTED_CHANGES } from './constDefine';
 import { ChangelistDetails, LineAnnotation } from './p4Command';
 import { P4LensDataService } from './p4LensDataService';
+import { buildChangelistSummaryText } from './stringUtils';
 
 export class P4DecorationController implements vscode.Disposable {
   private renderRequestId = 0;
@@ -106,17 +108,16 @@ export class P4DecorationController implements vscode.Disposable {
 
   private renderDisplayText(annotation: LineAnnotation, details?: ChangelistDetails): string {
     if (annotation.sourceType === 'local') {
-      return 'uncommitted changes';
+      return TEXT_UNCOMMITTED_CHANGES;
     }
 
     const earliestInfo = this.dataService.getEarliestTraceInfo(details);
     const changeNum = earliestInfo?.changeNum || details?.changeNum || annotation.changeNum;
     const submittedBy = earliestInfo?.submittedBy || details?.submittedBy || annotation.user;
-    const dateSubmitted = earliestInfo?.dateSubmitted || details?.dateSubmitted || 'N/A';
-    const description = earliestInfo?.description || details?.description || 'N/A';
-    const oneLineDescription = description.replace(/\s+/g, ' ').trim();
+    const dateSubmitted = earliestInfo?.dateSubmitted || details?.dateSubmitted || TEXT_NA;
+    const description = earliestInfo?.description || details?.description || TEXT_NA;
 
-    return `${submittedBy}, #${changeNum}, ${dateSubmitted}, ${oneLineDescription}`;
+    return buildChangelistSummaryText(submittedBy, changeNum, dateSubmitted, description);
   }
 
   dispose(): void {

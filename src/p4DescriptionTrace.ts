@@ -1,22 +1,23 @@
 import * as vscode from 'vscode';
+import {
+  DEFAULT_DESCRIPTION_TRACE_CHANGE_KEY,
+  DEFAULT_DESCRIPTION_TRACE_DESCRIPTION_KEY,
+  DEFAULT_DESCRIPTION_TRACE_MARKER,
+  DEFAULT_DESCRIPTION_TRACE_PARSER,
+  DEFAULT_DESCRIPTION_TRACE_STREAM_KEY,
+  DEFAULT_DESCRIPTION_TRACE_USER_KEY,
+  DESCRIPTION_TRACE_CHANGE_KEY_CONFIG_KEY,
+  DESCRIPTION_TRACE_CONFIGURATION_PREFIX,
+  DESCRIPTION_TRACE_DESCRIPTION_KEY_CONFIG_KEY,
+  DESCRIPTION_TRACE_ENABLED_CONFIG_KEY,
+  DESCRIPTION_TRACE_MARKER_CONFIG_KEY,
+  DESCRIPTION_TRACE_MAX_DEPTH_CONFIG_KEY,
+  DESCRIPTION_TRACE_PARSER_CONFIG_KEY,
+  DESCRIPTION_TRACE_STREAM_KEY_CONFIG_KEY,
+  DESCRIPTION_TRACE_USER_KEY_CONFIG_KEY,
+} from './constDefine';
+import { buildLogMessage, trimToOptionalString } from './stringUtils';
 
-export const DESCRIPTION_TRACE_CONFIGURATION_PREFIX = 'p4LensLite.descriptionTrace';
-
-const DESCRIPTION_TRACE_ENABLED_CONFIG_KEY = 'descriptionTrace.enabled';
-const DESCRIPTION_TRACE_MARKER_CONFIG_KEY = 'descriptionTrace.marker';
-const DESCRIPTION_TRACE_PARSER_CONFIG_KEY = 'descriptionTrace.parser';
-const DESCRIPTION_TRACE_CHANGE_KEY_CONFIG_KEY = 'descriptionTrace.changeKey';
-const DESCRIPTION_TRACE_USER_KEY_CONFIG_KEY = 'descriptionTrace.userKey';
-const DESCRIPTION_TRACE_DESCRIPTION_KEY_CONFIG_KEY = 'descriptionTrace.descriptionKey';
-const DESCRIPTION_TRACE_STREAM_KEY_CONFIG_KEY = 'descriptionTrace.streamKey';
-const DESCRIPTION_TRACE_MAX_DEPTH_CONFIG_KEY = 'descriptionTrace.maxDepth';
-
-const DEFAULT_DESCRIPTION_TRACE_MARKER = 'source:';
-const DEFAULT_DESCRIPTION_TRACE_PARSER: DescriptionTraceParser = 'json';
-const DEFAULT_DESCRIPTION_TRACE_CHANGE_KEY = 'changelist';
-const DEFAULT_DESCRIPTION_TRACE_USER_KEY = 'user';
-const DEFAULT_DESCRIPTION_TRACE_DESCRIPTION_KEY = 'description';
-const DEFAULT_DESCRIPTION_TRACE_STREAM_KEY = 'stream';
 const DEFAULT_DESCRIPTION_TRACE_MAX_DEPTH = 8;
 
 export type DescriptionTraceParser = 'json';
@@ -95,7 +96,7 @@ export function parseDescriptionTraceSource(
 
   const parsedPayload = tryParseJsonObject(rawPayload);
   if (!parsedPayload) {
-    console.log(`[P4Lens] Failed to parse description trace payload as JSON: ${rawPayload}`);
+    console.log(buildLogMessage('Failed to parse description trace payload as JSON: {0}', rawPayload));
     return null;
   }
 
@@ -138,8 +139,7 @@ function getStringValue(payload: Record<string, unknown>, key: string): string |
 
   const value = payload[key];
   if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
+    return trimToOptionalString(value);
   }
 
   if (typeof value === 'number') {

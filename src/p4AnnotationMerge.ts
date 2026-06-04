@@ -1,4 +1,5 @@
 import type { LineAnnotation, P4DiffHunk } from './p4Command';
+import { TEXT_UNCOMMITTED } from './constDefine';
 
 export function mergeAnnotationsForCurrentDocument(
   baseAnnotations: Map<number, LineAnnotation>,
@@ -81,7 +82,7 @@ function createLocalAnnotation(lineNumber: number): LineAnnotation {
   return {
     lineNumber,
     changeNum: 'local',
-    user: 'uncommitted',
+    user: TEXT_UNCOMMITTED,
     sourceType: 'local',
   };
 }

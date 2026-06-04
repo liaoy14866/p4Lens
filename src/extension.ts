@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
 import { P4DecorationController } from './p4DecorationController';
-import { DESCRIPTION_TRACE_CONFIGURATION_PREFIX } from './p4DescriptionTrace';
+import {
+  COMMAND_CHECK_OPEN_STATE_CACHE,
+  COMMAND_COPY_CHANGELIST_NUMBER,
+  CONFIG_KEY_OPEN_STATE_POLL_INTERVAL_SECONDS,
+  DESCRIPTION_TRACE_CONFIGURATION_PREFIX,
+  TEMPLATE_COPY_CLIPBOARD_MESSAGE,
+} from './constDefine';
 import {
   ENABLE_SYMBOL_CODELENS_CONFIG_KEY,
   P4SymbolDisplayService,
@@ -9,6 +15,7 @@ import {
 import { P4HoverProvider } from './p4HoverProvider';
 import { P4LensDataService } from './p4LensDataService';
 import { P4SymbolCodeLensProvider } from './p4SymbolCodeLensProvider';
+import { buildExtensionConfigPath, buildLogMessage, formatString } from './stringUtils';
 
 let dataService: P4LensDataService;
 let decorationController: P4DecorationController;
@@ -20,13 +27,12 @@ let lastRefreshCompletedAt = 0;
 let openStatePollRunning = false;
 const REFRESH_COOLDOWN_MS = 150;
 const DECORATION_RESTORE_DELAY_MS = 5000;
-const OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY = 'openStatePollIntervalSeconds';
 const DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS = 10;
 let showDecorationTimer: NodeJS.Timeout | undefined;
 let openStatePollTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log('[P4Lens] Activating extension...');
+  console.log(buildLogMessage('Activating extension...'));
 
   dataService = new P4LensDataService();
   const symbolDisplayService = new P4SymbolDisplayService({
@@ -41,7 +47,7 @@ export function activate(context: vscode.ExtensionContext) {
   const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(
     (editor) => {
       if (editor) {
-        console.log(`[P4Lens] Active editor changed: ${editor.document.uri.fsPath}`);
+        console.log(buildLogMessage('Active editor changed: {0}', editor.document.uri.fsPath));
         markRefreshRequested(editor);
       }
     }
@@ -50,14 +56,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection((event) => {
     if (event.textEditor.document.uri.scheme === 'file') {
-      console.log(`[P4Lens] Selection changed: ${event.textEditor.document.uri.fsPath}`);
+      console.log(buildLogMessage('Selection changed: {0}', event.textEditor.document.uri.fsPath));
       markRefreshRequested(event.textEditor);
     }
   });
   context.subscriptions.push(selectionChangeDisposable);
 
   const documentOpenDisposable = vscode.workspace.onDidOpenTextDocument((document) => {
-    console.log(`[P4Lens] Document opened: ${document.uri.fsPath}`);
+    console.log(buildLogMessage('Document opened: {0}', document.uri.fsPath));
     if (vscode.window.activeTextEditor?.document.uri.fsPath === document.uri.fsPath) {
       markRefreshRequested(vscode.window.activeTextEditor);
     }
@@ -69,7 +75,7 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    console.log(`[P4Lens] Document changed: ${event.document.uri.fsPath}, changes=${event.contentChanges.length}`);
+    console.log(buildLogMessage('Document changed: {0}, changes={1}', event.document.uri.fsPath, event.contentChanges.length));
 
     if (event.contentChanges.length > 0) {
       hideDecorationWhileTyping();
@@ -89,7 +95,7 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    console.log(`[P4Lens] Document saved: ${document.uri.fsPath}`);
+    console.log(buildLogMessage('Document saved: {0}', document.uri.fsPath));
 
     dataService.clearCache(document.uri.fsPath);
     codeLensProvider.clearCache(document.uri.fsPath);
@@ -101,7 +107,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(documentSaveDisposable);
 
   const configurationChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
-    console.log('[P4Lens] Configuration changed');
+    console.log(buildLogMessage('Configuration changed'));
 
     if (event.affectsConfiguration(getOpenStatePollIntervalConfigurationPath())) {
       restartOpenStatePollTimer();
@@ -125,7 +131,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(configurationChangeDisposable);
 
   const manualCheckCommandDisposable = vscode.commands.registerCommand(
-    'p4lenslite.checkOpenStateCache',
+    COMMAND_CHECK_OPEN_STATE_CACHE,
     async () => {
       await pollCachedFileOpenStates();
     }
@@ -133,10 +139,10 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(manualCheckCommandDisposable);
 
   const copyClCommandDisposable = vscode.commands.registerCommand(
-    'p4lenslite.copyChangelistNumber',
+    COMMAND_COPY_CHANGELIST_NUMBER,
     async (changeNum: string) => {
       await vscode.env.clipboard.writeText(changeNum);
-      vscode.window.showInformationMessage(`Copied CL Number ${changeNum} to clipboard`);
+      vscode.window.showInformationMessage(formatString(TEMPLATE_COPY_CLIPBOARD_MESSAGE, changeNum));
     }
   );
   context.subscriptions.push(copyClCommandDisposable);
@@ -158,7 +164,7 @@ export function activate(context: vscode.ExtensionContext) {
     codeLensProvider
   );
   context.subscriptions.push(codeLensProviderDisposable);
-  console.log('[P4Lens] CodeLens provider registered');
+  console.log(buildLogMessage('CodeLens provider registered'));
 
   // Update selected-line decoration for current editor on activation
   if (vscode.window.activeTextEditor) {
@@ -169,14 +175,14 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(decorationController, codeLensProvider);
 
-  console.log('[P4Lens] Extension activated successfully');
+  console.log(buildLogMessage('Extension activated successfully'));
 }
 
 export function deactivate() {
   pendingEditorForRefresh = undefined;
   clearShowDecorationTimer();
   clearOpenStatePollTimer();
-  console.log('[P4Lens] Extension deactivated');
+  console.log(buildLogMessage('Extension deactivated'));
 }
 
 function hideDecorationWhileTyping(): void {
@@ -216,7 +222,7 @@ function restartOpenStatePollTimer(): void {
 
   const pollIntervalMs = getOpenStatePollIntervalMs();
   if (pollIntervalMs === 0) {
-    console.log('[P4Lens] Open state polling disabled');
+    console.log(buildLogMessage('Open state polling disabled'));
     return;
   }
 
@@ -224,11 +230,11 @@ function restartOpenStatePollTimer(): void {
     void pollCachedFileOpenStates();
   }, pollIntervalMs);
 
-  console.log(`[P4Lens] Open state polling every ${pollIntervalMs}ms`);
+  console.log(buildLogMessage('Open state polling every {0}ms', pollIntervalMs));
 }
 
 function markRefreshRequested(editor: vscode.TextEditor): void {
-  console.log(`[P4Lens] Refresh requested: ${editor.document.uri.fsPath}`);
+  console.log(buildLogMessage('Refresh requested: {0}', editor.document.uri.fsPath));
   pendingEditorForRefresh = editor;
   void runRefreshLoop();
 }
@@ -251,10 +257,10 @@ async function runRefreshLoop(): Promise<void> {
       }
 
       try {
-        console.log(`[P4Lens] Refreshing decoration: ${editorToRefresh.document.uri.fsPath}`);
+        console.log(buildLogMessage('Refreshing decoration: {0}', editorToRefresh.document.uri.fsPath));
         await decorationController.updateDecorationsForSelection(editorToRefresh);
       } catch (error) {
-        console.error(`[P4Lens] Refresh failed: ${error}`);
+        console.error(buildLogMessage('Refresh failed: {0}', String(error)));
       } finally {
         lastRefreshCompletedAt = Date.now();
       }
@@ -277,7 +283,7 @@ async function pollCachedFileOpenStates(): Promise<void> {
     }
 
     if (codeLensProvider.hasPendingSymbolProviderRefresh()) {
-      console.log('[P4Lens] Poll detected pending symbol provider refresh');
+      console.log(buildLogMessage('Poll detected pending symbol provider refresh'));
       codeLensProvider.refresh();
     }
 
@@ -303,7 +309,7 @@ async function pollCachedFileOpenStates(): Promise<void> {
 function getOpenStatePollIntervalMs(): number {
   const configuredSeconds = vscode.workspace
     .getConfiguration('p4LensLite')
-    .get<number>(OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY, DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS);
+    .get<number>(CONFIG_KEY_OPEN_STATE_POLL_INTERVAL_SECONDS, DEFAULT_OPEN_STATE_POLL_INTERVAL_SECONDS);
 
   if (!Number.isFinite(configuredSeconds) || configuredSeconds <= 0) {
     return 0;
@@ -313,11 +319,11 @@ function getOpenStatePollIntervalMs(): number {
 }
 
 function getOpenStatePollIntervalConfigurationPath(): string {
-  return `p4LensLite.${OPEN_STATE_POLL_INTERVAL_SECONDS_CONFIG_KEY}`;
+  return buildExtensionConfigPath(CONFIG_KEY_OPEN_STATE_POLL_INTERVAL_SECONDS);
 }
 
 function getEnableSymbolCodeLensConfigurationPath(): string {
-  return `p4LensLite.${ENABLE_SYMBOL_CODELENS_CONFIG_KEY}`;
+  return buildExtensionConfigPath(ENABLE_SYMBOL_CODELENS_CONFIG_KEY);
 }
 
 function sleep(ms: number): Promise<void> {

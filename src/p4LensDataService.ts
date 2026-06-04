@@ -1,4 +1,14 @@
 import * as vscode from 'vscode';
+import {
+  COMMAND_COPY_CHANGELIST_NUMBER,
+  TEXT_NA,
+  TEXT_SOURCE_CL,
+  TEXT_SOURCE_DESCRIPTION,
+  TEXT_SOURCE_USER,
+  TEXT_STREAM,
+  TEXT_UNKNOWN,
+  TEXT_UNRESOLVED_TRACE,
+} from './constDefine';
 import { findP4Config } from './p4Config';
 import {
   runP4Annotate,
@@ -14,6 +24,13 @@ import {
   getDescriptionTraceConfig,
   parseDescriptionTraceSource,
 } from './p4DescriptionTrace';
+import {
+  buildLogMessage,
+  escapeMarkdown,
+  formatMarkdownDescription,
+  formatString,
+  normalizeToSingleLine,
+} from './stringUtils';
 
 type ResolvedP4Config = NonNullable<Awaited<ReturnType<typeof findP4Config>>>;
 
@@ -73,7 +90,7 @@ export class P4LensDataService {
     const earliestUserByChangeNum = new Map<string, string>();
     await Promise.all(uniqueChangeNums.map(async (changeNum) => {
       const details = await this.getDetailsForChange(changeNum, filePath);
-      const fallbackUser = fallbackUserByChangeNum.get(changeNum) || 'unknown';
+      const fallbackUser = fallbackUserByChangeNum.get(changeNum) || TEXT_UNKNOWN;
       earliestUserByChangeNum.set(changeNum, this.getEarliestTraceInfo(details)?.submittedBy || fallbackUser);
     }));
 
@@ -181,7 +198,7 @@ export class P4LensDataService {
         continue;
       }
 
-      console.log(`[P4Lens] Open state changed for ${filePath}: ${previousIsOpen} -> ${isOpen}`);
+      console.log(buildLogMessage('Open state changed for {0}: {1} -> {2}', filePath, previousIsOpen, isOpen));
       changedFilePaths.push(filePath);
       this.clearCache(filePath);
     }
@@ -194,7 +211,7 @@ export class P4LensDataService {
       const filePath = document.uri.fsPath;
       const config = await findP4Config(filePath);
       if (!config) {
-        console.log(`[P4Lens] No P4 config found for ${filePath}`);
+        console.log(buildLogMessage('No P4 config found for {0}', filePath));
         return undefined;
       }
 
@@ -208,7 +225,7 @@ export class P4LensDataService {
       const diffHunks = await runP4Diff(filePath, config);
       return mergeAnnotationsForCurrentDocument(baseAnnotations, diffHunks, document.lineCount);
     } catch (error) {
-      console.error(`[P4Lens] Error fetching annotations: ${error}`);
+      console.error(buildLogMessage('Error fetching annotations: {0}', String(error)));
       return undefined;
     }
   }
@@ -221,13 +238,13 @@ export class P4LensDataService {
     depth = 0
   ): Promise<ChangelistDetails | null> {
     if (visitedChangeNums.has(changeNum)) {
-      console.log(`[P4Lens] Description trace cycle detected at changelist ${changeNum}`);
+      console.log(buildLogMessage('Description trace cycle detected at changelist {0}', changeNum));
       return null;
     }
 
     const cachedDetails = this.changeDetails.get(changeNum);
     if (cachedDetails) {
-      console.log(`[P4Lens] Changelist cache hit: ${changeNum}`);
+      console.log(buildLogMessage('Changelist cache hit: {0}', changeNum));
       return cachedDetails;
     }
 
@@ -236,7 +253,7 @@ export class P4LensDataService {
       return existingRequest;
     }
 
-    console.log(`[P4Lens] Changelist cache miss: ${changeNum}`);
+    console.log(buildLogMessage('Changelist cache miss: {0}', changeNum));
     const request = runP4Describe(changeNum, config, filePath)
       .then(async (details) => {
         if (!details) {
@@ -297,27 +314,9 @@ export class P4LensDataService {
   }
 }
 
-export function escapeMarkdown(text: string): string {
-  return text.replace(/[\\`*_{}[\]()#+!]/g, '\\$&');
-}
-
-export function formatDescription(description: string): string {
-  const trimmedDescription = description.trim();
-  if (!trimmedDescription) {
-    return escapeMarkdown('N/A');
-  }
-
-  const escapedLines = trimmedDescription
-    .split(/\r?\n/)
-    .map((line) => escapeMarkdown(line))
-    .filter((line, index, allLines) => line.length > 0 || (index > 0 && index < allLines.length - 1));
-
-  return escapedLines.join('\n\n');
-}
-
 export function buildChangelistCopyMarkdown(changeNum: string): string {
   const copyArg = encodeURIComponent(JSON.stringify(changeNum));
-  return `#\`${escapeMarkdown(changeNum)}\`\u00a0\u00a0[$(copy)](command:p4lenslite.copyChangelistNumber?${copyArg})`;
+  return `#\`${escapeMarkdown(changeNum)}\`\u00a0\u00a0[$(copy)](command:${COMMAND_COPY_CHANGELIST_NUMBER}?${copyArg})`;
 }
 
 export function appendHoverSection(
@@ -332,11 +331,16 @@ export function appendHoverSection(
   }
 
   md.appendMarkdown(
-    `**${escapeMarkdown(details.submittedBy)}**, ${escapeMarkdown(details.dateSubmitted)}, ${escapeMarkdown(sectionTitle)}\n\n`
+    formatString(
+      '**{0}**, {1}, {2}\n\n',
+      escapeMarkdown(details.submittedBy),
+      escapeMarkdown(details.dateSubmitted),
+      escapeMarkdown(sectionTitle)
+    )
   );
 
   if (isResolved) {
-    md.appendMarkdown(`${formatDescription(details.description)}\n\n`);
+    md.appendMarkdown(formatString('{0}\n\n', formatMarkdownDescription(details.description)));
     md.appendMarkdown(buildChangelistCopyMarkdown(details.changeNum));
   }
 
@@ -346,18 +350,18 @@ export function appendHoverSection(
 
   const metadataLines: string[] = [];
   if (sourceSnapshot.stream) {
-    metadataLines.push(`Stream: ${escapeMarkdown(sourceSnapshot.stream)}`);
+    metadataLines.push(formatString('{0} {1}', TEXT_STREAM, escapeMarkdown(sourceSnapshot.stream)));
   }
 
   if (!isResolved) {
-    metadataLines.push(`Source CL: #${escapeMarkdown(sourceSnapshot.changelist || 'N/A')}`);
+    metadataLines.push(formatString('{0} #{1}', TEXT_SOURCE_CL, escapeMarkdown(sourceSnapshot.changelist || TEXT_NA)));
     if (sourceSnapshot.user) {
-      metadataLines.push(`Source User: ${escapeMarkdown(sourceSnapshot.user)}`);
+      metadataLines.push(formatString('{0} {1}', TEXT_SOURCE_USER, escapeMarkdown(sourceSnapshot.user)));
     }
     if (sourceSnapshot.description) {
-      metadataLines.push(`Source Description: ${escapeMarkdown(sourceSnapshot.description.replace(/\s+/g, ' ').trim())}`);
+      metadataLines.push(formatString('{0} {1}', TEXT_SOURCE_DESCRIPTION, escapeMarkdown(normalizeToSingleLine(sourceSnapshot.description))));
     }
-    metadataLines.push('Unable to resolve the traced changelist.');
+    metadataLines.push(TEXT_UNRESOLVED_TRACE);
   }
 
   if (metadataLines.length > 0) {

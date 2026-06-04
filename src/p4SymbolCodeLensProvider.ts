@@ -6,6 +6,7 @@ import {
   P4SymbolDisplayService,
   SYMBOL_CODELENS_NOOP_COMMAND,
 } from './p4SymbolCodeLens';
+import { buildLogMessage } from './stringUtils';
 
 export class P4SymbolCodeLensProvider implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly codeLensChangeEmitter = new vscode.EventEmitter<void>();
@@ -38,12 +39,12 @@ export class P4SymbolCodeLensProvider implements vscode.CodeLensProvider, vscode
       ));
     }
 
-    console.log(`[P4Lens] CodeLens generated ${codeLenses.length} entries for ${document.uri.fsPath}`);
+    console.log(buildLogMessage('CodeLens generated {0} entries for {1}', codeLenses.length, document.uri.fsPath));
     return codeLenses;
   }
 
   refresh(): void {
-    console.log('[P4Lens] CodeLens refresh requested');
+    console.log(buildLogMessage('CodeLens refresh requested'));
     this.codeLensChangeEmitter.fire();
   }
 

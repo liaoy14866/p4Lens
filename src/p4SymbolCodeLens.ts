@@ -1,10 +1,23 @@
 import * as vscode from 'vscode';
 import { LineAnnotation } from './p4Command';
+import {
+  COMMAND_NOOP_SYMBOL_CODELENS,
+  CONFIG_KEY_ENABLE_SYMBOL_CODELENS,
+  TEXT_CONTRIBUTORS,
+  TEXT_LINE,
+  TEXT_LINES,
+  TEXT_SYMBOL_CLASS,
+  TEXT_SYMBOL_FUNCTION,
+  TEXT_SYMBOL_INTERFACE,
+  TEXT_SYMBOL_STRUCT,
+  TEXT_UNCOMMITTED_PARENS,
+} from './constDefine';
+import { buildLogMessage, formatString } from './stringUtils';
 
 const MAX_VISIBLE_CONTRIBUTORS = 2;
 
-export const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = 'enableSymbolCodeLens';
-export const SYMBOL_CODELENS_NOOP_COMMAND = 'p4lenslite.noopSymbolCodeLens';
+export const ENABLE_SYMBOL_CODELENS_CONFIG_KEY = CONFIG_KEY_ENABLE_SYMBOL_CODELENS;
+export const SYMBOL_CODELENS_NOOP_COMMAND = COMMAND_NOOP_SYMBOL_CODELENS;
 
 export type SupportedSymbolKind = 'class' | 'interface' | 'struct' | 'function';
 
@@ -49,16 +62,16 @@ export class P4SymbolDisplayService {
   constructor(private readonly dependencies: P4SymbolCodeLensFeatureDependencies) {}
 
   async getSymbolData(document: vscode.TextDocument): Promise<CachedSymbolData | undefined> {
-    console.log(`[P4Lens] Symbol data requested: ${document.uri.fsPath}, version=${document.version}`);
+    console.log(buildLogMessage('Symbol data requested: {0}, version={1}', document.uri.fsPath, document.version));
 
     if (document.uri.scheme !== 'file' || !this.isSymbolCodeLensEnabled()) {
-      console.log(`[P4Lens] Symbol data skipped: scheme=${document.uri.scheme}, enabled=${this.isSymbolCodeLensEnabled()}`);
+      console.log(buildLogMessage('Symbol data skipped: scheme={0}, enabled={1}', document.uri.scheme, this.isSymbolCodeLensEnabled()));
       return undefined;
     }
 
     const symbolData = await this.getOrBuildSymbolData(document);
     if (!symbolData) {
-      console.log(`[P4Lens] Symbol data unavailable for ${document.uri.fsPath}`);
+      console.log(buildLogMessage('Symbol data unavailable for {0}', document.uri.fsPath));
       return undefined;
     }
 
@@ -84,13 +97,19 @@ export class P4SymbolDisplayService {
     const filePath = document.uri.fsPath;
     const cachedData = this.cachedSymbolDataByFile.get(filePath);
     if (cachedData && cachedData.documentVersion === document.version) {
-      console.log(`[P4Lens] CodeLens symbol cache hit: ${filePath}, version=${document.version}, symbols=${cachedData.symbols.length}, hasProviderResult=${cachedData.hasSymbolProviderResult}`);
+      console.log(buildLogMessage(
+        'CodeLens symbol cache hit: {0}, version={1}, symbols={2}, hasProviderResult={3}',
+        filePath,
+        document.version,
+        cachedData.symbols.length,
+        cachedData.hasSymbolProviderResult
+      ));
       return cachedData;
     }
 
     const symbolLoadResult = await loadSupportedSymbols(document);
     if (!symbolLoadResult.hasProviderResult) {
-      console.log(`[P4Lens] CodeLens symbol provider not ready for ${filePath}`);
+      console.log(buildLogMessage('CodeLens symbol provider not ready for {0}', filePath));
       this.pendingSymbolProviderRefreshByFile.set(filePath, document.version);
       return undefined;
     }
@@ -98,7 +117,7 @@ export class P4SymbolDisplayService {
     this.pendingSymbolProviderRefreshByFile.delete(filePath);
 
     if (symbolLoadResult.symbols.length === 0) {
-      console.log(`[P4Lens] CodeLens symbol provider returned 0 supported symbols for ${filePath}`);
+      console.log(buildLogMessage('CodeLens symbol provider returned 0 supported symbols for {0}', filePath));
       const emptySymbolData: CachedSymbolData = {
         documentVersion: document.version,
         symbols: [],
@@ -111,7 +130,7 @@ export class P4SymbolDisplayService {
 
     const annotations = await this.dependencies.getAnnotations(document);
     if (!annotations) {
-      console.log(`[P4Lens] CodeLens skipped: no annotations for ${filePath}`);
+      console.log(buildLogMessage('CodeLens skipped: no annotations for {0}', filePath));
       return undefined;
     }
 
@@ -131,14 +150,14 @@ export class P4SymbolDisplayService {
       hasSymbolProviderResult: true,
     };
     this.cachedSymbolDataByFile.set(filePath, symbolData);
-    console.log(`[P4Lens] CodeLens symbol cache built: ${filePath}, symbols=${symbolData.symbols.length}`);
+    console.log(buildLogMessage('CodeLens symbol cache built: {0}, symbols={1}', filePath, symbolData.symbols.length));
     return symbolData;
   }
 
   private isSymbolCodeLensEnabled(): boolean {
     return vscode.workspace
       .getConfiguration('p4LensLite')
-      .get<boolean>(ENABLE_SYMBOL_CODELENS_CONFIG_KEY, true);
+      .get<boolean>(CONFIG_KEY_ENABLE_SYMBOL_CODELENS, true);
   }
 }
 
@@ -152,7 +171,7 @@ export async function loadSupportedSymbols(document: vscode.TextDocument): Promi
       document.uri
     );
     if (!symbolResult) {
-      console.log(`[P4Lens] Symbol provider returned undefined for ${document.uri.fsPath}`);
+      console.log(buildLogMessage('Symbol provider returned undefined for {0}', document.uri.fsPath));
       return {
         hasProviderResult: false,
         symbols: [],
@@ -160,7 +179,7 @@ export async function loadSupportedSymbols(document: vscode.TextDocument): Promi
     }
 
     if (symbolResult.length === 0) {
-      console.log(`[P4Lens] Symbol provider returned empty list for ${document.uri.fsPath}`);
+      console.log(buildLogMessage('Symbol provider returned empty list for {0}', document.uri.fsPath));
       return {
         hasProviderResult: true,
         symbols: [],
@@ -169,7 +188,7 @@ export async function loadSupportedSymbols(document: vscode.TextDocument): Promi
 
     if (isDocumentSymbol(symbolResult[0])) {
       const flattenedSymbols = flattenDocumentSymbols(symbolResult as vscode.DocumentSymbol[]);
-      console.log(`[P4Lens] Symbol provider returned ${flattenedSymbols.length} supported document symbols for ${document.uri.fsPath}`);
+      console.log(buildLogMessage('Symbol provider returned {0} supported document symbols for {1}', flattenedSymbols.length, document.uri.fsPath));
       return {
         hasProviderResult: true,
         symbols: flattenedSymbols,
@@ -177,13 +196,13 @@ export async function loadSupportedSymbols(document: vscode.TextDocument): Promi
     }
 
     const filteredSymbols = filterSymbolInformation(symbolResult as vscode.SymbolInformation[]);
-    console.log(`[P4Lens] Symbol provider returned ${filteredSymbols.length} supported flat symbols for ${document.uri.fsPath}`);
+    console.log(buildLogMessage('Symbol provider returned {0} supported flat symbols for {1}', filteredSymbols.length, document.uri.fsPath));
     return {
       hasProviderResult: true,
       symbols: filteredSymbols,
     };
   } catch (error) {
-    console.log(`[P4Lens] Symbol provider unavailable for ${document.uri.fsPath}: ${error}`);
+    console.log(buildLogMessage('Symbol provider unavailable for {0}: {1}', document.uri.fsPath, String(error)));
     return {
       hasProviderResult: false,
       symbols: [],
@@ -251,13 +270,13 @@ export function buildCodeLensTitle(summary: SymbolCollaboratorSummary | undefine
 
   const titleParts: string[] = [];
   if (localContributor) {
-    titleParts.push('(uncommitted)');
+    titleParts.push(TEXT_UNCOMMITTED_PARENS);
   }
   titleParts.push(...visibleDepotUsers);
 
-  let title = `${titleParts.join(', ')}`;
+  let title = titleParts.join(', ');
   if (hiddenDepotCount > 0) {
-    title += ` +${hiddenDepotCount}`;
+    title = formatString('{0} +{1}', title, hiddenDepotCount);
   }
 
   return title;
@@ -270,13 +289,13 @@ export function buildCodeLensTooltip(summary: SymbolCollaboratorSummary | undefi
 
   const contributorLines = summary.contributors.map((contributor) => {
     if (contributor.sourceType === 'local') {
-      return '- (uncommitted)';
+      return formatString('- {0}', TEXT_UNCOMMITTED_PARENS);
     }
 
-    return `- ${contributor.user}`;
+    return formatString('- {0}', contributor.user);
   });
 
-  return ['Contributors:', ...contributorLines].join('\n');
+  return [TEXT_CONTRIBUTORS, ...contributorLines].join('\n');
 }
 
 export function buildSymbolCodeLensHoverMarkdown(
@@ -286,15 +305,15 @@ export function buildSymbolCodeLensHoverMarkdown(
 ): vscode.MarkdownString {
   const md = new vscode.MarkdownString();
   const escapedSymbolName = escapeMarkdown(symbol.name);
-  md.appendMarkdown(`**${getSymbolLabel(symbol)} ${escapedSymbolName}**\n\n`);
+  md.appendMarkdown(formatString('**{0} {1}**\n\n', getSymbolLabel(symbol), escapedSymbolName));
 
   for (const contributor of summary.contributors) {
     const contributorLabel = contributor.sourceType === 'local'
-      ? '(uncommitted)'
+      ? TEXT_UNCOMMITTED_PARENS
       : contributor.user;
     const escapedContributor = escapeMarkdown(contributorLabel);
-    const lineLabel = contributor.lineCount === 1 ? 'line' : 'lines';
-    md.appendMarkdown(`- ${escapedContributor}: ${contributor.lineCount} ${lineLabel}\n`);
+    const lineLabel = contributor.lineCount === 1 ? TEXT_LINE : TEXT_LINES;
+    md.appendMarkdown(formatString('- {0}: {1} {2}\n', escapedContributor, contributor.lineCount, lineLabel));
   }
 
   return md;
@@ -399,18 +418,18 @@ function mapSupportedSymbolKind(kind: vscode.SymbolKind): SupportedSymbolKind | 
 
 function getSymbolLabel(symbol: SymbolDescriptor): string {
   if (symbol.kind === 'class') {
-    return 'Class';
+    return TEXT_SYMBOL_CLASS;
   }
 
   if (symbol.kind === 'interface') {
-    return 'Interface';
+    return TEXT_SYMBOL_INTERFACE;
   }
 
   if (symbol.kind === 'struct') {
-    return 'Struct';
+    return TEXT_SYMBOL_STRUCT;
   }
 
-  return 'Function';
+  return TEXT_SYMBOL_FUNCTION;
 }
 
 function isDocumentSymbol(

@@ -1,8 +1,13 @@
 import * as vscode from 'vscode';
+import {
+  TEMPLATE_TRACE_VERSION_TITLE,
+  TEXT_CURRENT_VERSION,
+  TEXT_NA,
+  TEXT_UNKNOWN,
+} from './constDefine';
 import { ChangelistDetails, ChangelistTraceByDescInfo } from './p4Command';
 import {
   appendHoverSection,
-  escapeMarkdown,
   P4LensDataService,
 } from './p4LensDataService';
 import { P4DecorationController } from './p4DecorationController';
@@ -14,6 +19,7 @@ import {
   isPossibleCodeLensHoverPosition,
   P4SymbolDisplayService,
 } from './p4SymbolCodeLens';
+import { buildChangelistSummaryText, buildTraceVersionTitle, escapeMarkdown } from './stringUtils';
 
 export class P4HoverProvider implements vscode.HoverProvider {
   constructor(
@@ -97,7 +103,7 @@ export class P4HoverProvider implements vscode.HoverProvider {
     md.isTrusted = true;
     md.supportThemeIcons = true;
 
-    appendHoverSection(md, 'Current Version', details);
+    appendHoverSection(md, TEXT_CURRENT_VERSION, details);
     this.appendTraceSections(md, details.traceByDescInfo, 1);
 
     const decorationText = this.renderDecorationText(annotation.changeNum, annotation.user, details);
@@ -121,29 +127,28 @@ export class P4HoverProvider implements vscode.HoverProvider {
     }
 
     if (traceInfo.tracedChange) {
-      appendHoverSection(md, `Traced Version ${depth} (From Description)`, traceInfo.tracedChange, traceInfo.sourceSnapshot);
+      appendHoverSection(md, buildTraceVersionTitle(depth), traceInfo.tracedChange, traceInfo.sourceSnapshot);
       this.appendTraceSections(md, traceInfo.tracedChange.traceByDescInfo, depth + 1);
       return;
     }
 
     const unresolvedDetails: ChangelistDetails = {
-      changeNum: traceInfo.sourceSnapshot.changelist || 'N/A',
-      submittedBy: traceInfo.sourceSnapshot.user || 'unknown',
-      dateSubmitted: 'N/A',
-      description: traceInfo.sourceSnapshot.description || 'N/A',
+      changeNum: traceInfo.sourceSnapshot.changelist || TEXT_NA,
+      submittedBy: traceInfo.sourceSnapshot.user || TEXT_UNKNOWN,
+      dateSubmitted: TEXT_NA,
+      description: traceInfo.sourceSnapshot.description || TEXT_NA,
       traceByDescInfo: null,
     };
-    appendHoverSection(md, `Traced Version ${depth} (From Description)`, unresolvedDetails, traceInfo.sourceSnapshot, false);
+    appendHoverSection(md, buildTraceVersionTitle(depth), unresolvedDetails, traceInfo.sourceSnapshot, false);
   }
 
   private renderDecorationText(changeNum: string, fallbackUser: string, details: ChangelistDetails): string {
     const earliestInfo = this.dataService.getEarliestTraceInfo(details);
     const resolvedChangeNum = earliestInfo?.changeNum || details.changeNum || changeNum;
     const submittedBy = earliestInfo?.submittedBy || details.submittedBy || fallbackUser;
-    const dateSubmitted = earliestInfo?.dateSubmitted || details.dateSubmitted || 'N/A';
-    const description = earliestInfo?.description || details.description || 'N/A';
-    const oneLineDescription = description.replace(/\s+/g, ' ').trim();
+    const dateSubmitted = earliestInfo?.dateSubmitted || details.dateSubmitted || TEXT_NA;
+    const description = earliestInfo?.description || details.description || TEXT_NA;
 
-    return `${submittedBy}, #${resolvedChangeNum}, ${dateSubmitted}, ${oneLineDescription}`;
+    return buildChangelistSummaryText(submittedBy, resolvedChangeNum, dateSubmitted, description);
   }
 }

@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { P4_CONFIG_FILE_NAME } from './constDefine';
+import { buildLogMessage, splitLines } from './stringUtils';
 
 export interface P4Config {
   port?: string;
@@ -19,17 +21,17 @@ export async function findP4Config(filePath: string): Promise<P4Config | null> {
   const root = path.parse(currentDir).root;
 
   while (currentDir !== root) {
-    const configPath = path.join(currentDir, 'p4config.txt');
+    const configPath = path.join(currentDir, P4_CONFIG_FILE_NAME);
     
     try {
       if (fs.existsSync(configPath)) {
         const config = parseP4ConfigFile(configPath);
         config.configPath = configPath;
-        console.log(`[P4Lens] Found p4config.txt at: ${configPath}`);
+        console.log(buildLogMessage('Found {0} at: {1}', P4_CONFIG_FILE_NAME, configPath));
         return config;
       }
     } catch (err) {
-      console.error(`[P4Lens] Error reading p4config.txt: ${err}`);
+      console.error(buildLogMessage('Error reading {0}: {1}', P4_CONFIG_FILE_NAME, String(err)));
     }
 
     // Move up one directory
@@ -40,7 +42,7 @@ export async function findP4Config(filePath: string): Promise<P4Config | null> {
     currentDir = parentDir;
   }
 
-  console.log(`[P4Lens] No p4config.txt found for: ${filePath}`);
+  console.log(buildLogMessage('No {0} found for: {1}', P4_CONFIG_FILE_NAME, filePath));
   return null;
 }
 
@@ -53,7 +55,7 @@ function parseP4ConfigFile(configPath: string): P4Config {
   const content = fs.readFileSync(configPath, 'utf-8');
   const config: P4Config = {};
 
-  const lines = content.split('\n');
+  const lines = splitLines(content);
   for (const line of lines) {
     const trimmed = line.trim();
     // Skip empty lines and comments

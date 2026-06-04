@@ -1,8 +1,10 @@
 import { execFileSync } from 'child_process';
 import * as path from 'path';
+import { P4_CONFIG_FILE_NAME } from './constDefine';
 import { P4Config } from './p4Config';
 import { DescriptionTraceSourceSnapshot } from './p4DescriptionTrace';
 import { loadIntegrationAwareAnnotations } from './p4FilelogAnnotations';
+import { buildLogMessage, splitLines } from './stringUtils';
 
 const P4_MAX_BUFFER = 10 * 1024 * 1024;
 
@@ -55,7 +57,7 @@ export async function runP4Annotate(
   try {
     const { env, cwd } = buildP4ExecOptions(config, filePath);
 
-    console.log(`[P4Lens] Executing: p4 annotate -q -c -i "${filePath}"`);
+    console.log(buildLogMessage('Executing: p4 annotate -q -c -i "{0}"', filePath));
     const annotateOutput = execFileSync('p4', ['annotate', '-q', '-c', '-i', filePath], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -66,7 +68,7 @@ export async function runP4Annotate(
 
     const rawAnnotations = parseP4AnnotateOutput(annotateOutput);
     if (rawAnnotations.length === 0) {
-      console.log('[P4Lens] No annotate lines parsed');
+      console.log(buildLogMessage('No annotate lines parsed'));
       return new Map<number, LineAnnotation>();
     }
 
@@ -76,7 +78,7 @@ export async function runP4Annotate(
       (fileSpec) => buildP4ExecOptions(config, fileSpec)
     );
   } catch (err) {
-    console.error(`[P4Lens] Error executing p4 annotate: ${err}`);
+    console.error(buildLogMessage('Error executing p4 annotate: {0}', String(err)));
     return null;
   }
 }
@@ -90,7 +92,7 @@ export async function runP4Diff(
   delete diffEnv.P4DIFF;
   delete diffEnv.P4DIFFUNICODE;
 
-  console.log(`[P4Lens] Executing: p4 diff -du "${filePath}"`);
+  console.log(buildLogMessage('Executing: p4 diff -du "{0}"', filePath));
 
   try {
     const output = execFileSync('p4', ['diff', '-du', filePath], {
@@ -105,11 +107,11 @@ export async function runP4Diff(
   } catch (err) {
     const output = getCommandOutputFromError(err);
     if (output.trim()) {
-      console.log('[P4Lens] p4 diff returned non-zero status; parsing captured output');
+      console.log(buildLogMessage('p4 diff returned non-zero status; parsing captured output'));
       return parseP4DiffOutput(output);
     }
 
-    console.error(`[P4Lens] Error executing p4 diff: ${err}`);
+    console.error(buildLogMessage('Error executing p4 diff: {0}', String(err)));
     return [];
   }
 }
@@ -122,7 +124,7 @@ export async function runP4Describe(
   try {
     const { env, cwd } = buildP4ExecOptions(config, filePath);
 
-    console.log(`[P4Lens] Executing: p4 change -o ${changeNum}`);
+    console.log(buildLogMessage('Executing: p4 change -o {0}', changeNum));
     const output = execFileSync('p4', ['change', '-o', changeNum], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -133,7 +135,7 @@ export async function runP4Describe(
 
     return parseP4ChangeOutput(output, changeNum);
   } catch (err) {
-    console.error(`[P4Lens] Error executing p4 change: ${err}`);
+    console.error(buildLogMessage('Error executing p4 change: {0}', String(err)));
     return null;
   }
 }
@@ -145,7 +147,7 @@ export async function runP4Opened(
   try {
     const { env, cwd } = buildP4ExecOptions(config, filePath);
 
-    console.log(`[P4Lens] Executing: p4 opened "${filePath}"`);
+    console.log(buildLogMessage('Executing: p4 opened "{0}"', filePath));
     const output = execFileSync('p4', ['opened', filePath], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -166,7 +168,7 @@ export async function runP4Opened(
       return false;
     }
 
-    console.error(`[P4Lens] Error executing p4 opened: ${err}`);
+    console.error(buildLogMessage('Error executing p4 opened: {0}', String(err)));
     return null;
   }
 }
@@ -178,7 +180,7 @@ function buildP4ExecOptions(config: P4Config, filePath: string): { env: NodeJS.P
     P4USER: config.P4USER || config.user || process.env.P4USER,
     P4CLIENT: config.P4CLIENT || config.client || process.env.P4CLIENT,
     P4IGNORE: config.P4IGNORE || process.env.P4IGNORE,
-    P4CONFIG: process.env.P4CONFIG || 'p4config.txt',
+    P4CONFIG: process.env.P4CONFIG || P4_CONFIG_FILE_NAME,
   };
 
   const cwd = config.configPath ? path.dirname(config.configPath) : path.dirname(filePath);
@@ -204,10 +206,6 @@ function getCommandOutputFromError(err: unknown, stream: 'stdout' | 'stderr' = '
   return '';
 }
 
-function splitIntoLines(output: string): string[] {
-  return output.split(/\r?\n/);
-}
-
 /**
  * Parse the output of p4 annotate command
  * @param output The raw output from p4 annotate
@@ -215,7 +213,7 @@ function splitIntoLines(output: string): string[] {
  */
 function parseP4AnnotateOutput(output: string): RawAnnotationLine[] {
   const annotations: RawAnnotationLine[] = [];
-  const lines = splitIntoLines(output);
+  const lines = splitLines(output);
   let unmatchedCount = 0;
   let sourceLineNumber = 1;
 
@@ -234,18 +232,18 @@ function parseP4AnnotateOutput(output: string): RawAnnotationLine[] {
     } else {
       unmatchedCount++;
       if (unmatchedCount <= 3) {
-        console.log(`[P4Lens] Unmatched annotate line sample: ${line}`);
+        console.log(buildLogMessage('Unmatched annotate line sample: {0}', line));
       }
     }
   }
 
-  console.log(`[P4Lens] Parsed ${annotations.length} line annotations`);
+  console.log(buildLogMessage('Parsed {0} line annotations', annotations.length));
   return annotations;
 }
 
 function parseP4DiffOutput(output: string): P4DiffHunk[] {
   const hunks: P4DiffHunk[] = [];
-  const lines = output.split('\n');
+  const lines = splitLines(output);
   let currentHunk: P4DiffHunk | null = null;
 
   for (const line of lines) {
@@ -278,7 +276,7 @@ function parseP4DiffOutput(output: string): P4DiffHunk[] {
     hunks.push(currentHunk);
   }
 
-  console.log(`[P4Lens] Parsed ${hunks.length} diff hunks`);
+  console.log(buildLogMessage('Parsed {0} diff hunks', hunks.length));
   return hunks;
 }
 
@@ -291,7 +289,7 @@ function parseDiffRangeCount(rawCount: string | undefined): number {
 }
 
 function parseP4ChangeOutput(output: string, fallbackChangeNum: string): ChangelistDetails {
-  const lines = splitIntoLines(output);
+  const lines = splitLines(output);
   let changeNum = fallbackChangeNum;
   let submittedBy = '';
   let dateSubmitted = '';
