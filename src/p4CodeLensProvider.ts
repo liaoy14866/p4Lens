@@ -29,6 +29,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   constructor() {
     this.symbolCodeLensFeature = new P4SymbolCodeLensFeature({
       getAnnotations: (document) => this.getOrFetchAnnotations(document),
+      getDisplayAnnotations: (document, annotations) => this.getDisplayAnnotations(document, annotations),
       escapeMarkdown: (text) => this.escapeMarkdown(text),
     });
   }
@@ -69,18 +70,9 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
         return;
       }
 
-      details = this.changeDetails.get(annotation.changeNum);
-      if (!details) {
-        console.log(`[P4Lens] Changelist cache miss: ${annotation.changeNum}`);
-        details = await this.getOrFetchDescribe(annotation.changeNum, config, filePath) || undefined;
-        if (requestId !== this.renderRequestId) {
-          return;
-        }
-        if (details) {
-          this.changeDetails.set(annotation.changeNum, details);
-        }
-      } else {
-        console.log(`[P4Lens] Changelist cache hit: ${annotation.changeNum}`);
+      details = await this.getOrFetchDescribe(annotation.changeNum, config, filePath) || undefined;
+      if (requestId !== this.renderRequestId) {
+        return;
       }
     }
 
@@ -178,6 +170,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
   clearDescribeCache(): void {
     this.changeDetails.clear();
     this.inFlightDescribe.clear();
+    this.symbolCodeLensFeature.clearCache();
   }
 
   private clearFileCaches(filePath?: string): void {
@@ -249,21 +242,9 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       return null;
     }
 
-    const baseDetails = await this.getOrFetchBaseDescribe(changeNum, config, filePath);
-    if (!baseDetails) {
-      return null;
-    }
-
-    return this.buildDescribeWithTrace(baseDetails, config, filePath, visitedChangeNums, depth);
-  }
-
-  private async getOrFetchBaseDescribe(
-    changeNum: string,
-    config: NonNullable<Awaited<ReturnType<typeof findP4Config>>>,
-    filePath: string
-  ): Promise<ChangelistDetails | null> {
     const cachedDetails = this.changeDetails.get(changeNum);
     if (cachedDetails) {
+      console.log(`[P4Lens] Changelist cache hit: ${changeNum}`);
       return cachedDetails;
     }
 
@@ -272,13 +253,16 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       return existingRequest;
     }
 
+    console.log(`[P4Lens] Changelist cache miss: ${changeNum}`);
     const request = runP4Describe(changeNum, config, filePath)
-      .then((details) => {
-        if (details) {
-          this.changeDetails.set(changeNum, details);
+      .then(async (details) => {
+        if (!details) {
+          return null;
         }
 
-        return details;
+        const tracedDetails = await this.buildDescribeWithTrace(details, config, filePath, visitedChangeNums, depth);
+        this.changeDetails.set(changeNum, tracedDetails);
+        return tracedDetails;
       })
       .finally(() => {
         this.inFlightDescribe.delete(changeNum);
@@ -353,7 +337,7 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     filePath: string,
     visitedChangeNums: Set<string>,
     depth: number
-  ): Promise<ChangelistDetails | null> {
+  ): Promise<ChangelistDetails> {
     const details: ChangelistDetails = {
       ...baseDetails,
       traceByDescInfo: null,
@@ -477,6 +461,85 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
     return escapedLines.join('\n\n');
   }
 
+  private async getDisplayAnnotations(
+    document: vscode.TextDocument,
+    annotations: Map<number, LineAnnotation>
+  ): Promise<Map<number, LineAnnotation>> {
+    const filePath = document.uri.fsPath;
+    const config = this.p4ConfigByFile.get(filePath);
+    if (!config) {
+      return annotations;
+    }
+
+    const depotAnnotations = Array.from(annotations.values()).filter((annotation) => annotation.sourceType === 'depot');
+    const uniqueChangeNums = Array.from(new Set(depotAnnotations.map((annotation) => annotation.changeNum)));
+    if (uniqueChangeNums.length === 0) {
+      return annotations;
+    }
+
+    const earliestUserByChangeNum = new Map<string, string>();
+    await Promise.all(uniqueChangeNums.map(async (changeNum) => {
+      const details = await this.getOrFetchDescribe(changeNum, config, filePath);
+      const fallbackUser = depotAnnotations.find((annotation) => annotation.changeNum === changeNum)?.user || 'unknown';
+      earliestUserByChangeNum.set(changeNum, this.getEarliestTraceInfo(details)?.submittedBy || fallbackUser);
+    }));
+
+    const displayAnnotations = new Map<number, LineAnnotation>();
+    for (const [lineNumber, annotation] of annotations.entries()) {
+      if (annotation.sourceType !== 'depot') {
+        displayAnnotations.set(lineNumber, annotation);
+        continue;
+      }
+
+      displayAnnotations.set(lineNumber, {
+        ...annotation,
+        user: earliestUserByChangeNum.get(annotation.changeNum) || annotation.user,
+      });
+    }
+
+    return displayAnnotations;
+  }
+
+  private getEarliestTraceInfo(details: ChangelistDetails | null | undefined): {
+    changeNum: string;
+    submittedBy: string;
+    dateSubmitted: string;
+    description: string;
+  } | undefined {
+    if (!details) {
+      return undefined;
+    }
+
+    let earliestInfo = {
+      changeNum: details.changeNum,
+      submittedBy: details.submittedBy,
+      dateSubmitted: details.dateSubmitted,
+      description: details.description,
+    };
+    let currentTraceInfo = details.traceByDescInfo;
+
+    while (currentTraceInfo) {
+      if (!currentTraceInfo.tracedChange) {
+        return {
+          changeNum: currentTraceInfo.sourceSnapshot.changelist || earliestInfo.changeNum,
+          submittedBy: currentTraceInfo.sourceSnapshot.user || earliestInfo.submittedBy,
+          dateSubmitted: earliestInfo.dateSubmitted,
+          description: currentTraceInfo.sourceSnapshot.description || earliestInfo.description,
+        };
+      }
+
+      earliestInfo = {
+        changeNum: currentTraceInfo.tracedChange.changeNum,
+        submittedBy: currentTraceInfo.tracedChange.submittedBy,
+        dateSubmitted: currentTraceInfo.tracedChange.dateSubmitted,
+        description: currentTraceInfo.tracedChange.description,
+      };
+      currentTraceInfo = currentTraceInfo.tracedChange.traceByDescInfo;
+    }
+
+    return earliestInfo;
+  }
+
   refreshCodeLenses(): void {
     console.log('[P4Lens] CodeLens refresh requested');
     this.codeLensChangeEmitter.fire();
@@ -516,10 +579,11 @@ export class P4CodeLensProvider implements vscode.HoverProvider, vscode.CodeLens
       return 'uncommitted changes';
     }
 
-    const changeNum = details?.changeNum || annotation.changeNum;
-    const submittedBy = details?.submittedBy || annotation.user;
-    const dateSubmitted = details?.dateSubmitted || 'N/A';
-    const description = details?.description || 'N/A';
+    const earliestInfo = this.getEarliestTraceInfo(details);
+    const changeNum = earliestInfo?.changeNum || details?.changeNum || annotation.changeNum;
+    const submittedBy = earliestInfo?.submittedBy || details?.submittedBy || annotation.user;
+    const dateSubmitted = earliestInfo?.dateSubmitted || details?.dateSubmitted || 'N/A';
+    const description = earliestInfo?.description || details?.description || 'N/A';
     const oneLineDescription = description.replace(/\s+/g, ' ').trim();
 
     return `${submittedBy}, #${changeNum}, ${dateSubmitted}, ${oneLineDescription}`;

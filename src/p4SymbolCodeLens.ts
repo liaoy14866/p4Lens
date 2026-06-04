@@ -36,6 +36,10 @@ export interface CachedSymbolData {
 
 interface P4SymbolCodeLensFeatureDependencies {
   getAnnotations(document: vscode.TextDocument): Promise<Map<number, LineAnnotation> | undefined>;
+  getDisplayAnnotations(
+    document: vscode.TextDocument,
+    annotations: Map<number, LineAnnotation>
+  ): Promise<Map<number, LineAnnotation>>;
   escapeMarkdown(text: string): string;
 }
 
@@ -171,11 +175,12 @@ export class P4SymbolCodeLensFeature {
       return undefined;
     }
 
+    const displayAnnotations = await this.dependencies.getDisplayAnnotations(document, annotations);
     const collaboratorSummaryByRangeKey = new Map<string, SymbolCollaboratorSummary>();
     for (const symbol of symbolLoadResult.symbols) {
       collaboratorSummaryByRangeKey.set(
         createSymbolRangeKey(symbol),
-        buildSymbolCollaboratorSummary(symbol, annotations, document.lineCount)
+        buildSymbolCollaboratorSummary(symbol, displayAnnotations, document.lineCount)
       );
     }
 
